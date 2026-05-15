@@ -78,12 +78,20 @@ fun NavGraph(innerPadding: PaddingValues, navController: NavHostController) {
     ) {
         // login
         composable(route = Screen.Login.route) {
-            LoginScreen()
+            LoginScreen(
+                openRegisterScreen = {
+                    navController.navigate(Screen.Register.route)
+                }
+            )
         }
 
         // register
         composable(route = Screen.Register.route) {
-            RegisterScreen()
+            RegisterScreen(
+                openLoginScreen = {
+                    navController.navigate(Screen.Login.route)
+                }
+            )
         }
 
         // pin unlock
