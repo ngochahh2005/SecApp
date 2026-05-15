@@ -27,17 +27,23 @@ val Typography = Typography(
         letterSpacing = 0.5.sp
     ),
     titleLarge = TextStyle(
-        fontFamily = FontFamily.Default,
+        fontFamily = space_grotesk,
+        fontWeight = FontWeight.Bold,
+        fontSize = 36.sp,
+        lineHeight = 32.sp,
+        letterSpacing = 0.sp
+    ),
+    bodyMedium = TextStyle(
+        fontFamily = ibm_plex_sans,
         fontWeight = FontWeight.Normal,
         fontSize = 22.sp,
-        lineHeight = 28.sp,
-        letterSpacing = 0.sp
+        letterSpacing = 0.5.sp
     ),
     labelMedium = TextStyle(
         fontFamily = ibm_plex_sans,
         fontWeight = FontWeight.Normal,
-        fontSize = 14.sp,
-        lineHeight = 16.sp,
+        fontSize = 18.sp,
         letterSpacing = 0.5.sp
-    )
+    ),
+
 )
