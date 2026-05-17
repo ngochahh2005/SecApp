@@ -14,10 +14,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.wrapContentSize
+import android.os.Build
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import android.widget.Toast
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -26,11 +28,17 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -41,6 +49,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.secapp.R
+import com.example.secapp.data.repository.AuthRepository
+import com.example.secapp.data.repository.AuthResult
 import com.example.secapp.ui.components.AuthTitle
 import com.example.secapp.ui.components.CommonSpace
 import com.example.secapp.ui.components.PasswordTextField
@@ -51,13 +61,37 @@ import com.example.secapp.ui.theme.ibm_plex_sans
 import com.example.secapp.ui.theme.space_grotesk
 import com.example.secapp.ui.theme.titleColor
 import com.example.secapp.ui.viewmodel.LoginViewModel
+import kotlinx.coroutines.launch
 
 @Composable
 fun LoginScreen(
     viewModel: LoginViewModel = viewModel(),
-    openRegisterScreen: () -> Unit = {}
+    openRegisterScreen: () -> Unit = {},
+    openPinUnlockScreen: () -> Unit = {}
 ) {
+    val context = LocalContext.current
     val focusManager = LocalFocusManager.current
+    val authRepository = remember { AuthRepository(context) }
+    val coroutineScope = rememberCoroutineScope()
+    var isLoading by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    val handleLogin = {
+        coroutineScope.launch {
+            isLoading = true
+            errorMessage = null
+            when (val result = authRepository.login(viewModel.username.trim(), viewModel.password, Build.MODEL)) {
+                is AuthResult.Success -> {
+                    Toast.makeText(context, "Đăng nhập thành công. Nhập PIN để mở khóa.", Toast.LENGTH_SHORT).show()
+                    openPinUnlockScreen()
+                }
+                is AuthResult.Failure -> {
+                    errorMessage = result.message
+                }
+            }
+            isLoading = false
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize().background(backgroundColor)) {
         Image(
@@ -115,7 +149,7 @@ fun LoginScreen(
                 viewModel.password,
                 onPassWordChange = { viewModel.onPasswordChange(it) },
                 onShowPasswordChange = { viewModel.onShowPasswordChange() },
-                onAction = { focusManager.moveFocus(FocusDirection.Down) },
+                onAction = { if (!isLoading) handleLogin() },
                 imeAction = ImeAction.Done
             )
 
@@ -133,12 +167,21 @@ fun LoginScreen(
 
             CommonSpace(36.dp)
 
+            errorMessage?.let { message ->
+                Text(
+                    text = message,
+                    color = Color(0xFFB00020),
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(vertical = 12.dp)
+                )
+            }
+
             Column(
                 modifier = Modifier.fillMaxSize(),
-//                verticalArrangement = Arrangement.spacedBy(36.dp)
             ) {
                 Button(
-                    onClick = {},
+                    onClick = { handleLogin() },
+                    enabled = !isLoading,
                     elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = Color(0xff283FB1)
@@ -147,11 +190,10 @@ fun LoginScreen(
                     modifier = Modifier.fillMaxWidth().height(48.dp)
                 ) {
                     Text(
-                        text = "Đăng nhập",
+                        text = if (isLoading) "Đang xử lý..." else "Đăng nhập",
                         fontWeight = FontWeight.Bold,
-                        style = MaterialTheme.typography.labelMedium,
-
-                        )
+                        style = MaterialTheme.typography.labelMedium
+                    )
                 }
 
                 Spacer(modifier = Modifier.weight(1f))

@@ -24,14 +24,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.tooling.preview.Devices
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.secapp.data.repository.AuthRepository
 import com.example.secapp.data.repository.AuthResult
-import com.example.secapp.ui.components.CommonSpace
 import com.example.secapp.ui.components.PinCodeInput
 import com.example.secapp.ui.components.PinHeaderIcon
 import com.example.secapp.ui.theme.SecAppTheme
@@ -41,31 +42,41 @@ import com.example.secapp.ui.theme.space_grotesk
 import kotlinx.coroutines.launch
 
 @Composable
-fun PinUnlockScreen(
-    openDashboard: () -> Unit = {},
-    onLogout: () -> Unit = {}
+fun CreatePinScreen(
+    username: String,
+    email: String,
+    password: String,
+    confirmPassword: String,
+    openLoginScreen: () -> Unit = {},
+    onMissingRegistrationData: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
     val authRepository = remember { AuthRepository(context) }
     val coroutineScope = rememberCoroutineScope()
     var pin by remember { mutableStateOf("") }
-    var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var isLoading by remember { mutableStateOf(false) }
 
     fun submit() {
         if (isLoading) return
+        if (username.isBlank() || email.isBlank() || password.isBlank() || confirmPassword.isBlank()) {
+            onMissingRegistrationData()
+            return
+        }
         if (pin.length != 6) {
-            errorMessage = "Vui lòng nhập đủ 6 số PIN"
+            errorMessage = "PIN phải gồm đúng 6 số"
             return
         }
 
         coroutineScope.launch {
             isLoading = true
             errorMessage = null
-            when (val result = authRepository.unlockMasterPrivateKey(pin)) {
+            focusManager.clearFocus()
+            when (val result = authRepository.signup(username, email, password, confirmPassword, pin)) {
                 is AuthResult.Success -> {
-                    Toast.makeText(context, "Mở khóa thành công.", Toast.LENGTH_SHORT).show()
-                    openDashboard()
+                    Toast.makeText(context, "Đăng ký thành công. Vui lòng đăng nhập.", Toast.LENGTH_SHORT).show()
+                    openLoginScreen()
                 }
                 is AuthResult.Failure -> {
                     errorMessage = result.message
@@ -90,7 +101,7 @@ fun PinUnlockScreen(
             Spacer(modifier = Modifier.height(76.dp))
 
             Text(
-                text = "Nhập mã PIN",
+                text = "Tạo mã PIN mới",
                 color = Color.Black,
                 fontFamily = space_grotesk,
                 fontWeight = FontWeight.Bold,
@@ -99,7 +110,7 @@ fun PinUnlockScreen(
             )
             Spacer(modifier = Modifier.height(24.dp))
             Text(
-                text = "Nhập mã PIN của bạn để khôi phục khóa cá nhân và mở lịch sử chat.",
+                text = "Hãy tạo mã PIN dễ nhớ. Bạn sẽ cần nhập mã PIN để khôi phục lịch sử chat.",
                 color = Color(0xFF777A82),
                 fontFamily = ibm_plex_sans,
                 fontSize = 18.sp,
@@ -132,35 +143,16 @@ fun PinUnlockScreen(
             Spacer(modifier = Modifier.weight(1f))
             Button(
                 onClick = { submit() },
-                elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp),
                 enabled = !isLoading,
+                elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xff283FB1)),
                 shape = RoundedCornerShape(4.dp),
                 modifier = Modifier.fillMaxWidth().height(48.dp)
             ) {
                 Text(
-                    text = if (isLoading) "Đang xử lý..." else "Mở khóa",
+                    text = if (isLoading) "Đang xử lý..." else "Tạo tài khoản",
                     fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.labelMedium
-                )
-            }
-
-            CommonSpace(20.dp)
-
-            Button(
-                onClick = onLogout,
-                elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color.White,
-                    contentColor = Color(0xff283FB1)
-                ),
-                shape = RoundedCornerShape(4.dp),
-                modifier = Modifier.fillMaxWidth().height(48.dp)
-            ) {
-                Text(
-                    text = "Đăng xuất",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Bold
                 )
             }
         }
@@ -168,9 +160,14 @@ fun PinUnlockScreen(
 }
 
 @Composable
-@Preview(showSystemUi = true)
-fun PinUnlockScreenPreview() {
-    SecAppTheme() {
-        PinUnlockScreen()
+@Preview(showSystemUi = true, device = Devices.PIXEL_7)
+fun CreatePinScreenPreview() {
+    SecAppTheme {
+        CreatePinScreen(
+            username = "ngochahh2005",
+            email = "ngochahh2005@example.com",
+            password = "12345678",
+            confirmPassword = "12345678"
+        )
     }
 }

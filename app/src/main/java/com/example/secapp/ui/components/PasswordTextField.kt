@@ -83,8 +83,14 @@ fun PasswordTextField(
         ),
 
         keyboardActions = KeyboardActions(
-            onDone = { onAction() },
-            onNext = { onAction() }
+            onDone = { 
+                onAction()
+            },
+            onNext = { onAction() },
+            onGo = { onAction() },
+            onSend = { onAction() },
+            onPrevious = { onAction() },
+            onSearch = { onAction() }
         ),
 
         visualTransformation = if (isShowPassword) VisualTransformation.None else PasswordVisualTransformation()

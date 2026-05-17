@@ -31,6 +31,7 @@ fun UsernameTextField(
     text: String = "example123",
     onValueChange: (String) -> Unit = {},
     onAction: () -> Unit = {},
+    imeAction: ImeAction = ImeAction.Next,
     modifier: Modifier = Modifier,
 ) {
     OutlinedTextField(
@@ -65,11 +66,12 @@ fun UsernameTextField(
 
         keyboardOptions = KeyboardOptions(
             keyboardType = KeyboardType.Email,
-            imeAction = ImeAction.Next
+            imeAction = imeAction
         ),
 
         keyboardActions = KeyboardActions(
-            onNext = { onAction() }
+            onNext = { onAction() },
+            onDone = { onAction() }
         )
     )
 }

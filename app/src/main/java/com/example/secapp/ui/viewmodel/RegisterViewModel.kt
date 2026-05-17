@@ -47,4 +47,5 @@ class RegisterViewModel: ViewModel() {
     fun onShowConfirmPasswordChange() {
         isShowConfirmPassword = !isShowConfirmPassword
     }
+
 }

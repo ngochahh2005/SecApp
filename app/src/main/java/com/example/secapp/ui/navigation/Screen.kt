@@ -3,5 +3,7 @@ package com.example.secapp.ui.navigation
 sealed class Screen(val route: String) {
     object Login: Screen("login")
     object Register: Screen("register")
+    object CreatePin: Screen("create_pin")
     object PinUnlock: Screen("pin_unlock")
+    object Dashboard: Screen("dashboard")
 }

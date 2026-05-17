@@ -13,19 +13,19 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.wrapContentSize
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusDirection
@@ -48,19 +48,44 @@ import com.example.secapp.ui.components.UsernameTextField
 import com.example.secapp.ui.theme.SecAppTheme
 import com.example.secapp.ui.theme.backgroundColor
 import com.example.secapp.ui.theme.ibm_plex_sans
-import com.example.secapp.ui.theme.space_grotesk
-import com.example.secapp.ui.theme.titleColor
-import com.example.secapp.ui.viewmodel.LoginViewModel
 import com.example.secapp.ui.viewmodel.RegisterViewModel
 
 @Composable
 fun RegisterScreen(
     viewModel: RegisterViewModel = viewModel(),
-    openLoginScreen: () -> Unit = {}
+    openLoginScreen: () -> Unit = {},
+    openCreatePinScreen: (username: String, email: String, password: String, confirmPassword: String) -> Unit = { _, _, _, _ -> }
 ) {
     val focusManager = LocalFocusManager.current
+    var errorMessage by remember { mutableStateOf<String?>(null) }
 
-    Box(modifier = Modifier.fillMaxSize().background(backgroundColor)) {
+    val handleClickNext = {
+        val error = when {
+            viewModel.username.isBlank() || viewModel.email.isBlank() || viewModel.password.isBlank() || viewModel.confirmPassword.isBlank() ->
+                "Vui lòng nhập đầy đủ thông tin"
+            viewModel.password.length !in 8..128 ->
+                "Mật khẩu phải có từ 8 đến 128 ký tự"
+            viewModel.password != viewModel.confirmPassword ->
+                "Mật khẩu và xác nhận mật khẩu không khớp"
+            else -> null
+        }
+        
+        errorMessage = error
+
+        if (error == null) {
+            openCreatePinScreen(
+                viewModel.username.trim(),
+                viewModel.email.trim(),
+                viewModel.password,
+                viewModel.confirmPassword
+            )
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize().background(backgroundColor).clickable(
+        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+        indication = null
+    ) { focusManager.clearFocus() }) {
         Image(
             painter = painterResource(R.drawable.gradient_background),
             contentDescription = null,
@@ -104,8 +129,9 @@ fun RegisterScreen(
             CommonSpace(8.dp)
             UsernameTextField(
                 username = viewModel.username,
-                onValueChange = {viewModel.onUsernameChange(it)},
-                onAction = { focusManager.moveFocus(FocusDirection.Down) }
+                onValueChange = { viewModel.onUsernameChange(it) },
+                onAction = { focusManager.moveFocus(FocusDirection.Down) },
+                imeAction = ImeAction.Next
             )
 
             CommonSpace()
@@ -115,8 +141,9 @@ fun RegisterScreen(
             UsernameTextField(
                 username = viewModel.email,
                 text = "example123@gmail.com",
-                onValueChange = {viewModel.onEmailChange(it)},
-                onAction = { focusManager.moveFocus(FocusDirection.Down) }
+                onValueChange = { viewModel.onEmailChange(it) },
+                onAction = { focusManager.moveFocus(FocusDirection.Down) },
+                imeAction = ImeAction.Next
             )
 
             CommonSpace()
@@ -141,33 +168,39 @@ fun RegisterScreen(
                 password = viewModel.confirmPassword,
                 onPassWordChange = { viewModel.onConfirmPasswordChange(it) },
                 onShowPasswordChange = { viewModel.onShowConfirmPasswordChange() },
-                onAction = { focusManager.moveFocus(FocusDirection.Down) },
+                onAction = {
+                    focusManager.clearFocus(true)
+                    handleClickNext()
+               },
                 imeAction = ImeAction.Done
             )
 
-//            CommonSpace(36.dp)
+            CommonSpace(24.dp)
 
-            Column(
-                modifier = Modifier.fillMaxSize(),
-            ) {
+            errorMessage?.let { message ->
+                Text(
+                    text = message,
+                    color = Color(0xFFB00020),
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(vertical = 12.dp)
+                )
+            }
+
+            Column(modifier = Modifier.fillMaxSize()) {
                 Spacer(modifier = Modifier.weight(3.5f))
                 Button(
-                    onClick = openLoginScreen,
+                    onClick = { handleClickNext() },
                     elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xff283FB1)
-                    ),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xff283FB1)),
                     shape = RoundedCornerShape(4.dp),
                     modifier = Modifier.fillMaxWidth().height(48.dp)
                 ) {
                     Text(
-                        text = "Đăng ký",
+                        text = "Tiếp tục",
                         fontWeight = FontWeight.Bold,
                         style = MaterialTheme.typography.labelMedium
                     )
                 }
-
-//                Spacer(modifier = Modifier.weight(1f))
 
                 Spacer(modifier = Modifier.weight(1f))
 
@@ -186,8 +219,7 @@ fun RegisterScreen(
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
                         color = Color(0xff283FB1),
-                        modifier = Modifier
-                            .clickable(onClick = openLoginScreen)
+                        modifier = Modifier.clickable(onClick = openLoginScreen)
                     )
                 }
             }
@@ -198,7 +230,7 @@ fun RegisterScreen(
 @Composable
 @Preview(showSystemUi = true, device = Devices.PIXEL_7)
 fun RegisterScreenPreview() {
-    SecAppTheme() {
+    SecAppTheme {
         RegisterScreen()
     }
 }
@@ -206,7 +238,7 @@ fun RegisterScreenPreview() {
 @Composable
 @Preview(showSystemUi = true, device = Devices.TABLET)
 fun RegisterScreenPreview2() {
-    SecAppTheme() {
+    SecAppTheme {
         RegisterScreen()
     }
 }
@@ -214,7 +246,7 @@ fun RegisterScreenPreview2() {
 @Composable
 @Preview(showSystemUi = true, device = Devices.PIXEL_9_PRO)
 fun RegisterScreenPreview3() {
-    SecAppTheme() {
+    SecAppTheme {
         RegisterScreen()
     }
 }
