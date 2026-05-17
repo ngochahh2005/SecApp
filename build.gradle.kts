@@ -2,4 +2,14 @@
 plugins {
     alias(libs.plugins.android.application) apply false
     alias(libs.plugins.kotlin.compose) apply false
+    alias(libs.plugins.detekt)
+    alias(libs.plugins.sonar)
+}
+
+sonar {
+    properties {
+        property("sonar.projectKey", "NguyenTuKien_SecApp")
+        property("sonar.organization", "nguyentukien")
+        property("sonar.host.url", "https://sonarcloud.io")
+    }
 }
