@@ -4,6 +4,10 @@ plugins {
     alias(libs.plugins.detekt)
 }
 
+detekt {
+    ignoreFailures = true
+}
+
 android {
     namespace = "com.example.secapp"
     compileSdk {

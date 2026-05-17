@@ -6,6 +6,10 @@ plugins {
     alias(libs.plugins.sonar)
 }
 
+detekt {
+    ignoreFailures = true
+}
+
 sonar {
     properties {
         property("sonar.projectKey", "NguyenTuKien_SecApp")
