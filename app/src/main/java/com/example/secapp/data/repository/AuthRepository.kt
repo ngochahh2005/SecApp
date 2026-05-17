@@ -163,7 +163,9 @@ class AuthRepository(context: Context) {
                 ?.let { runCatching { gson.fromJson(it, JsonObject::class.java) }.getOrNull() }
 
             val fieldErrors = json
-                ?.getAsJsonObject("fieldErrors")
+                ?.get("fieldErrors")
+                ?.takeIf { it.isJsonObject }
+                ?.asJsonObject
                 ?.entrySet()
                 ?.map { (field, error) -> "${field.displayName()}: ${error.asString.toVietnameseValidationMessage()}" }
                 ?.takeIf { it.isNotEmpty() }
