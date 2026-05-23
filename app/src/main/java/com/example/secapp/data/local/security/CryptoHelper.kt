@@ -48,13 +48,28 @@ object CryptoHelper {
     }
 
     fun decryptRsaOaep(cipherTextBase64: String, privateKey: PrivateKey): String {
+        return String(decryptRsaOaepToBytes(cipherTextBase64, privateKey), Charsets.UTF_8)
+    }
+
+    fun decryptRsaOaepToBytes(cipherTextBase64: String, privateKey: PrivateKey): ByteArray {
         val cipherText = fromBase64(cipherTextBase64)
-        val decrypted = runCatching {
+        return runCatching {
             decryptRsaOaep(cipherText, privateKey, MGF1ParameterSpec.SHA1)
         }.getOrElse {
             decryptRsaOaep(cipherText, privateKey, MGF1ParameterSpec.SHA256)
         }
-        return String(decrypted, Charsets.UTF_8)
+    }
+
+    fun encryptRsaOaepToBase64(plainText: ByteArray, publicKey: PublicKey): String {
+        val cipher = Cipher.getInstance(RSA_TRANSFORMATION)
+        val spec = OAEPParameterSpec(
+            "SHA-256",
+            "MGF1",
+            MGF1ParameterSpec.SHA1,
+            PSource.PSpecified.DEFAULT
+        )
+        cipher.init(Cipher.ENCRYPT_MODE, publicKey, spec)
+        return toBase64(cipher.doFinal(plainText))
     }
 
     private fun decryptRsaOaep(
@@ -73,17 +88,29 @@ object CryptoHelper {
         return cipher.doFinal(cipherText)
     }
 
-    fun encryptAesGcm(plainText: ByteArray, secretKey: SecretKeySpec, iv: ByteArray): ByteArray {
+    fun encryptAesGcm(
+        plainText: ByteArray,
+        secretKey: SecretKeySpec,
+        iv: ByteArray,
+        aad: ByteArray? = null
+    ): ByteArray {
         val cipher = Cipher.getInstance(AES_TRANSFORMATION)
         val spec = GCMParameterSpec(128, iv)
         cipher.init(Cipher.ENCRYPT_MODE, secretKey, spec)
+        aad?.let(cipher::updateAAD)
         return cipher.doFinal(plainText)
     }
 
-    fun decryptAesGcm(cipherText: ByteArray, secretKey: SecretKeySpec, iv: ByteArray): ByteArray {
+    fun decryptAesGcm(
+        cipherText: ByteArray,
+        secretKey: SecretKeySpec,
+        iv: ByteArray,
+        aad: ByteArray? = null
+    ): ByteArray {
         val cipher = Cipher.getInstance(AES_TRANSFORMATION)
         val spec = GCMParameterSpec(128, iv)
         cipher.init(Cipher.DECRYPT_MODE, secretKey, spec)
+        aad?.let(cipher::updateAAD)
         return cipher.doFinal(cipherText)
     }
 

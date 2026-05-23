@@ -19,14 +19,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavHostController
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.navArgument
 import com.example.secapp.data.repository.AuthRepository
 import com.example.secapp.ui.screen.auth.CreatePinScreen
 import com.example.secapp.ui.screen.auth.DashboardScreen
 import com.example.secapp.ui.screen.auth.LoginScreen
 import com.example.secapp.ui.screen.auth.PinUnlockScreen
 import com.example.secapp.ui.screen.auth.RegisterScreen
+import com.example.secapp.ui.screen.chat.ChatDetailScreen
+import com.example.secapp.ui.screen.chat.ConversationListScreen
+import com.example.secapp.ui.screen.chat.CreateConversationScreen
 
 @Composable
 fun NavGraph(innerPadding: PaddingValues, navController: NavHostController) {
@@ -150,7 +155,7 @@ fun NavGraph(innerPadding: PaddingValues, navController: NavHostController) {
             val authRepository = AuthRepository(context)
             PinUnlockScreen(
                 openDashboard = {
-                    navController.navigate(Screen.Dashboard.route) {
+                    navController.navigate(Screen.Conversations.route) {
                         popUpTo(Screen.Login.route) { inclusive = true }
                     }
                 },
@@ -176,6 +181,56 @@ fun NavGraph(innerPadding: PaddingValues, navController: NavHostController) {
                         popUpTo(Screen.Dashboard.route) { inclusive = true }
                     }
                 }
+            )
+        }
+
+        composable(route = Screen.Conversations.route) {
+            val context = LocalContext.current
+            val authRepository = AuthRepository(context)
+            ConversationListScreen(
+                onOpenConversation = { conversation ->
+                    navController.navigate(
+                        Screen.ChatDetail.createRoute(conversation.id, conversation.currentKeyVersion)
+                    )
+                },
+                onCreateConversation = {
+                    navController.navigate(Screen.CreateConversation.route)
+                },
+                onLogout = {
+                    authRepository.clearSession()
+                    navController.navigate(Screen.Login.route) {
+                        popUpTo(Screen.Conversations.route) { inclusive = true }
+                    }
+                }
+            )
+        }
+
+        composable(route = Screen.CreateConversation.route) {
+            CreateConversationScreen(
+                onBack = { navController.popBackStack() },
+                onConversationCreated = { conversation ->
+                    navController.navigate(
+                        Screen.ChatDetail.createRoute(conversation.id, conversation.currentKeyVersion)
+                    ) {
+                        popUpTo(Screen.Conversations.route) { inclusive = false }
+                    }
+                }
+            )
+        }
+
+        composable(
+            route = Screen.ChatDetail.route,
+            arguments = listOf(
+                navArgument("conversationId") { type = NavType.StringType },
+                navArgument("keyVersion") { type = NavType.IntType }
+            )
+        ) { backStackEntry ->
+            val conversationId = backStackEntry.arguments?.getString("conversationId").orEmpty()
+            val keyVersion = backStackEntry.arguments?.getInt("keyVersion") ?: 1
+            ChatDetailScreen(
+                conversationId = conversationId,
+                keyVersion = keyVersion,
+                onBack = { navController.popBackStack() }
             )
         }
     }
