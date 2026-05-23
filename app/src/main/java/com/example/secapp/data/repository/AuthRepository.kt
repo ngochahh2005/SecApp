@@ -1,8 +1,10 @@
 package com.example.secapp.data.repository
 
 import android.content.Context
+import com.example.secapp.data.local.security.AuthSessionState
 import com.example.secapp.data.local.security.CryptoHelper
 import com.example.secapp.data.local.security.SecureStorage
+import com.example.secapp.data.local.security.SessionCryptoState
 import com.example.secapp.data.model.dto.AuthResponse
 import com.example.secapp.data.model.dto.LoginRequest
 import com.example.secapp.data.model.dto.MasterKeyRequest
@@ -89,6 +91,7 @@ class AuthRepository(context: Context) {
         return@withContext try {
             val keyPair = CryptoHelper.generateRsaKeyPair()
             sessionKeyPair = keyPair
+            SessionCryptoState.setSessionPrivateKey(keyPair.private)
             val request = LoginRequest(
                 usernameOrEmail = usernameOrEmail,
                 password = password,
@@ -97,13 +100,17 @@ class AuthRepository(context: Context) {
             )
             val response: AuthResponse = authService.login(request)
             val refreshToken = CryptoHelper.decryptRsaOaep(response.encryptedRefreshToken, keyPair.private)
-            secureStorage.storeAuthData(
+            val stored = secureStorage.storeAuthData(
                 accessToken = response.accessToken,
                 refreshToken = refreshToken,
                 sessionKeyId = response.sessionKeyId,
                 userResponse = response.user,
                 masterKey = response.masterKey
             )
+            if (!stored || secureStorage.getAccessToken().isNullOrBlank()) {
+                return@withContext AuthResult.Failure("Không lưu được phiên đăng nhập. Vui lòng thử lại.")
+            }
+            AuthSessionState.setTokens(response.accessToken, refreshToken, response.sessionKeyId)
             AuthResult.Success(Unit)
         } catch (throwable: Throwable) {
             val message = throwable.message.orEmpty()
@@ -142,6 +149,7 @@ class AuthRepository(context: Context) {
             val keyFactory = KeyFactory.getInstance("RSA")
             val privateKey = keyFactory.generatePrivate(PKCS8EncodedKeySpec(decryptedBytes))
             unlockedMasterPrivateKey = privateKey
+            SessionCryptoState.setMasterPrivateKey(privateKey)
             AuthResult.Success(privateKey)
         } catch (throwable: Throwable) {
             AuthResult.Failure("PIN không đúng hoặc dữ liệu đã bị thay đổi")
@@ -153,6 +161,8 @@ class AuthRepository(context: Context) {
     fun clearSession() {
         sessionKeyPair = null
         unlockedMasterPrivateKey = null
+        AuthSessionState.clear()
+        SessionCryptoState.clear()
         secureStorage.clear()
     }
 

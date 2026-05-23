@@ -57,8 +57,8 @@ class SecureStorage(context: Context) {
         sessionKeyId: String,
         userResponse: UserResponse,
         masterKey: MasterKeyResponse
-    ) {
-        sharedPreferences.edit()
+    ): Boolean {
+        return sharedPreferences.edit()
             .putString(KEY_ACCESS_TOKEN, accessToken)
             .putString(KEY_REFRESH_TOKEN, refreshToken)
             .putString(KEY_SESSION_KEY_ID, sessionKeyId)
@@ -70,7 +70,7 @@ class SecureStorage(context: Context) {
             .putString(KEY_KDF_PARAMS, gson.toJson(masterKey.kdfParams))
             .putString(KEY_MASTER_STATUS, masterKey.status)
             .putString(KEY_USER_INFO, gson.toJson(userResponse))
-            .apply()
+            .commit()
     }
 
     fun getAccessToken(): String? = sharedPreferences.getString(KEY_ACCESS_TOKEN, null)
@@ -96,6 +96,6 @@ class SecureStorage(context: Context) {
     }
 
     fun clear() {
-        sharedPreferences.edit().clear().apply()
+        sharedPreferences.edit().clear().commit()
     }
 }
