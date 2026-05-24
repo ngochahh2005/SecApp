@@ -3,6 +3,7 @@ package com.example.secapp.data.remote
 import android.content.Context
 import com.example.secapp.data.local.security.AuthSessionState
 import com.example.secapp.data.local.security.SecureStorage
+import com.example.secapp.data.model.dto.RealtimeMemberLeftEvent
 import com.example.secapp.data.model.dto.RealtimeErrorEvent
 import com.example.secapp.data.model.dto.RealtimeMessageEvent
 import com.example.secapp.data.model.dto.RealtimeMessageRequest
@@ -16,7 +17,8 @@ import okhttp3.WebSocketListener
 class ChatRealtimeClient(
     context: Context,
     private val onMessage: (RealtimeMessageEvent) -> Unit,
-    private val onError: (String) -> Unit
+    private val onError: (String) -> Unit,
+    private val onMemberLeft: (RealtimeMemberLeftEvent) -> Unit = {}
 ) {
     private val secureStorage = SecureStorage(context.applicationContext)
     private val client = OkHttpClient.Builder().build()
@@ -50,8 +52,14 @@ class ChatRealtimeClient(
                 }
 
                 val event = runCatching { gson.fromJson(text, RealtimeMessageEvent::class.java) }.getOrNull()
-                if (event?.type == "message.created") {
+                if (event != null && RealtimeEventTypePolicy.isMessageCreated(event.type)) {
                     onMessage(event)
+                    return
+                }
+
+                val memberLeft = runCatching { gson.fromJson(text, RealtimeMemberLeftEvent::class.java) }.getOrNull()
+                if (memberLeft != null && RealtimeEventTypePolicy.isMemberLeft(memberLeft.type)) {
+                    onMemberLeft(memberLeft)
                 }
             }
 

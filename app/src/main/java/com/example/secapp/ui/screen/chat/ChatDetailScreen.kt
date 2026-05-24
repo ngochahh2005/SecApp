@@ -55,6 +55,7 @@ import com.example.secapp.data.local.security.SessionCryptoState
 import com.example.secapp.data.remote.ChatRealtimeClient
 import com.example.secapp.data.repository.AuthRepository
 import com.example.secapp.data.repository.AuthResult
+import com.example.secapp.data.repository.ChatKeyRotationPolicy
 import com.example.secapp.data.repository.ChatMessageItem
 import com.example.secapp.data.repository.ChatRepository
 import com.example.secapp.data.repository.ChatResult
@@ -87,14 +88,23 @@ fun ChatDetailScreen(
     var input by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(true) }
     var isSending by remember { mutableStateOf(false) }
+    var isRotatingKey by remember { mutableStateOf(false) }
     var isUnlockingPin by remember { mutableStateOf(false) }
     var hasUnlockedMasterKey by remember { mutableStateOf(SessionCryptoState.getMasterPrivateKey() != null) }
     var showPinUnlock by remember { mutableStateOf(false) }
     var pin by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var statusMessage by remember { mutableStateOf<String?>(null) }
     var realtimeClient by remember { mutableStateOf<ChatRealtimeClient?>(null) }
 
     fun loadMessages() {
+        if (!ChatSendUiPolicy.shouldLoadHistory(hasUnlockedMasterKey)) {
+            messages = emptyList()
+            isLoading = false
+            errorMessage = null
+            return
+        }
+
         coroutineScope.launch {
             isLoading = true
             errorMessage = null
@@ -103,6 +113,27 @@ fun ChatDetailScreen(
                 is ChatResult.Failure -> errorMessage = result.message
             }
             isLoading = false
+        }
+    }
+
+    fun rotateKeyManually() {
+        if (isRotatingKey) return
+        coroutineScope.launch {
+            isRotatingKey = true
+            errorMessage = null
+            statusMessage = null
+            try {
+                when (val result = repository.rotateConversationKey(conversationId, activeKeyVersion)) {
+                    is ChatResult.Success -> {
+                        activeKeyVersion = result.value
+                        statusMessage = "Đã rotate khóa sang version ${result.value}"
+                        loadMessages()
+                    }
+                    is ChatResult.Failure -> errorMessage = result.message
+                }
+            } finally {
+                isRotatingKey = false
+            }
         }
     }
 
@@ -127,9 +158,7 @@ fun ChatDetailScreen(
                             when (val restResult = repository.sendTextMessage(conversationId, activeKeyVersion, text)) {
                                 is ChatResult.Success -> {
                                     input = ""
-                                    if (ChatSendUiPolicy.shouldReloadMessagesAfterSend(sentRealtime)) {
-                                        loadMessages()
-                                    }
+                                    messages = (messages + restResult.value).distinctBy { it.id }
                                 }
                                 is ChatResult.Failure -> errorMessage = restResult.message
                             }
@@ -198,6 +227,28 @@ fun ChatDetailScreen(
             },
             onError = { message ->
                 coroutineScope.launch { errorMessage = message }
+            },
+            onMemberLeft = memberLeft@ { event ->
+                val data = event.data ?: return@memberLeft
+                if (data.conversationId != conversationId) return@memberLeft
+                coroutineScope.launch {
+                    when (val result = repository.rotateConversationKey(
+                        conversationId = conversationId,
+                        requestedKeyVersion = activeKeyVersion,
+                        reason = ChatKeyRotationPolicy.MEMBER_LEFT
+                    )) {
+                        is ChatResult.Success -> {
+                            activeKeyVersion = result.value
+                            statusMessage = "Thành viên rời nhóm, đã rotate khóa sang version ${result.value}"
+                            loadMessages()
+                        }
+                        is ChatResult.Failure -> {
+                            if (!result.message.contains("Only owner", ignoreCase = true)) {
+                                errorMessage = result.message
+                            }
+                        }
+                    }
+                }
             }
         )
         realtimeClient = client
@@ -217,8 +268,10 @@ fun ChatDetailScreen(
     ) {
         ChatHeader(
             activeKeyVersion = activeKeyVersion,
+            isRotatingKey = isRotatingKey,
             onBack = onBack,
-            onRefresh = { loadMessages() }
+            onRefresh = { loadMessages() },
+            onRotateKey = { rotateKeyManually() }
         )
 
         if (showPinRecovery) {
@@ -243,6 +296,11 @@ fun ChatDetailScreen(
         errorMessage?.let {
             Spacer(modifier = Modifier.height(10.dp))
             ErrorMessage(message = it)
+        }
+
+        statusMessage?.let {
+            Spacer(modifier = Modifier.height(10.dp))
+            StatusMessage(message = it)
         }
 
         Box(
@@ -278,8 +336,10 @@ fun ChatDetailScreen(
 @Composable
 private fun ChatHeader(
     activeKeyVersion: Int,
+    isRotatingKey: Boolean,
     onBack: () -> Unit,
-    onRefresh: () -> Unit
+    onRefresh: () -> Unit,
+    onRotateKey: () -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -319,6 +379,31 @@ private fun ChatHeader(
                 color = ChatMutedText
             )
         }
+
+        IconButton(
+            onClick = onRotateKey,
+            enabled = !isRotatingKey,
+            modifier = Modifier
+                .size(44.dp)
+                .clip(CircleShape)
+                .background(Color(0xFFF2F4F7))
+        ) {
+            if (isRotatingKey) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    strokeWidth = 2.dp,
+                    color = ChatAccent
+                )
+            } else {
+                Icon(
+                    Icons.Default.Security,
+                    contentDescription = "Rotate key",
+                    tint = ChatPrimary
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.width(8.dp))
 
         IconButton(
             onClick = onRefresh,
@@ -433,6 +518,26 @@ private fun PinRecoveryPanel(
                 Text(if (isUnlockingPin) "Đang khôi phục..." else "Khôi phục lịch sử")
             }
         }
+    }
+}
+
+@Composable
+private fun StatusMessage(message: String) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp),
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFE7F4F1)),
+        border = BorderStroke(1.dp, Color(0xFFB7E4DA)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Text(
+            text = message,
+            color = Color(0xFF0F766E),
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(12.dp)
+        )
     }
 }
 
@@ -557,6 +662,9 @@ private fun MessageInputBar(
 
 @Composable
 private fun MessageBubble(message: ChatMessageItem) {
+    val messageTime = message.createdAt?.takeIf { it.isNotBlank() }?.asMessageTime()
+    val metaText = listOfNotNull("Key v${message.keyVersion}", messageTime).joinToString(" • ")
+
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (message.isMine) Arrangement.End else Arrangement.Start
@@ -584,10 +692,10 @@ private fun MessageBubble(message: ChatMessageItem) {
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
-                message.createdAt?.takeIf { it.isNotBlank() }?.let {
+                metaText.takeIf { it.isNotBlank() }?.let {
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = it.asMessageTime(),
+                        text = it,
                         color = if (message.isMine) Color(0xFFD7E3FF) else ChatMutedText,
                         style = MaterialTheme.typography.labelSmall,
                         modifier = Modifier.align(if (message.isMine) Alignment.End else Alignment.Start)

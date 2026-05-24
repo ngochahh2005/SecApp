@@ -47,6 +47,7 @@ data class ChatMessageItem(
     val content: String,
     val isMine: Boolean,
     val createdAt: String?,
+    val keyVersion: Int,
     val canDecrypt: Boolean
 )
 
@@ -84,20 +85,48 @@ class ChatRepository(context: Context) {
     }
 
     suspend fun createDirectConversation(participant: UserResponse): ChatResult<ConversationItem> = withContext(Dispatchers.IO) {
-        return@withContext runCatching {
+        return@withContext createConversation(listOf(participant), groupName = "", forceGroup = false)
+    }
+
+    suspend fun createGroupConversation(participants: List<UserResponse>, groupName: String): ChatResult<ConversationItem> = withContext(Dispatchers.IO) {
+        return@withContext createConversation(participants, groupName = groupName, forceGroup = true)
+    }
+
+    private suspend fun createConversation(
+        participants: List<UserResponse>,
+        groupName: String,
+        forceGroup: Boolean
+    ): ChatResult<ConversationItem> {
+        val distinctParticipants = participants.distinctBy { it.id }
+        if (!ConversationCreationPolicy.canCreate(distinctParticipants.size, forceGroup, groupName)) {
+            return ChatResult.Failure(
+                if (forceGroup || distinctParticipants.size > 1) {
+                    "Vui lòng chọn thành viên và nhập tên nhóm"
+                } else {
+                    "Vui lòng chọn đúng một người để tạo chat trực tiếp"
+                }
+            )
+        }
+        return runCatching {
             val currentUser = secureStorage.getUserInfo() ?: userService.me(authHeader())
             val conversationKey = ChatCrypto.generateConversationKey()
             val keyVersion = 1
+            val conversationType = ConversationCreationPolicy.resolveType(distinctParticipants.size, forceGroup)
             val encryptedKeys = buildEncryptedKeys(
-                users = listOf(currentUser, participant).distinctBy { it.id },
+                users = (listOf(currentUser) + distinctParticipants).distinctBy { it.id },
                 conversationKey = conversationKey,
                 keyVersion = keyVersion
             )
-            val conversationName = ChatCrypto.encodeConversationName("Chat với ${participant.displayName}")
+            val conversationTitle = if (conversationType == "GROUP") {
+                groupName.trim()
+            } else {
+                "Chat với ${distinctParticipants.first().displayName}"
+            }
+            val conversationName = ChatCrypto.encodeConversationName(conversationTitle)
             val request = CreateConversationRequest(
-                type = "DIRECT",
+                type = conversationType,
                 name = conversationName,
-                participantIds = listOf(participant.id),
+                participantIds = distinctParticipants.map { it.id },
                 encryptedKeys = encryptedKeys
             )
             val conversation = conversationService.createConversation(authHeader(), request)
@@ -114,23 +143,44 @@ class ChatRepository(context: Context) {
             val currentUserId = currentUserId()
             messageService.getMessages(authHeader(), conversationId).map { message ->
                 val conversationKey = getConversationKeyForRead(message.conversationId, message.keyVersion)
-                    ?: return@map null
-                message.toItem(currentUserId, conversationKey).takeIf { it.canDecrypt }
-            }.filterNotNull()
+                    ?: return@map message.toLockedItem(currentUserId)
+                message.toItem(currentUserId, conversationKey)
+            }
         }.fold(
             onSuccess = { ChatResult.Success(it) },
             onFailure = { ChatResult.Failure(readableApiError(it, "Không tải được tin nhắn")) }
         )
     }
 
-    suspend fun sendTextMessage(conversationId: String, keyVersion: Int, content: String): ChatResult<Unit> = withContext(Dispatchers.IO) {
+    suspend fun rotateConversationKey(
+        conversationId: String,
+        requestedKeyVersion: Int,
+        reason: String = ChatKeyRotationPolicy.MANUAL_SECURITY_ROTATION
+    ): ChatResult<Int> = withContext(Dispatchers.IO) {
+        return@withContext runCatching {
+            rotateConversationKeyMaterial(conversationId, requestedKeyVersion, reason).keyVersion
+        }.fold(
+            onSuccess = { ChatResult.Success(it) },
+            onFailure = { ChatResult.Failure(readableApiError(it, "Không rotate được khóa cuộc trò chuyện")) }
+        )
+    }
+
+    suspend fun sendTextMessage(conversationId: String, keyVersion: Int, content: String): ChatResult<ChatMessageItem> = withContext(Dispatchers.IO) {
         if (content.isBlank()) return@withContext ChatResult.Failure("Tin nhắn không được để trống")
         return@withContext runCatching {
             val request = buildSendMessageRequest(conversationId, keyVersion, content)
-            messageService.sendMessage(authHeader(), conversationId, request)
-            Unit
+            val response = messageService.sendMessage(authHeader(), conversationId, request)
+            ChatMessageItem(
+                id = response.messageId,
+                senderId = response.senderId,
+                content = content.trim(),
+                isMine = true,
+                createdAt = request.clientCreatedAt,
+                keyVersion = request.keyVersion,
+                canDecrypt = true
+            )
         }.fold(
-            onSuccess = { ChatResult.Success(Unit) },
+            onSuccess = { ChatResult.Success(it) },
             onFailure = { ChatResult.Failure(readableApiError(it, "Không gửi được tin nhắn")) }
         )
     }
@@ -238,6 +288,10 @@ class ChatRepository(context: Context) {
             return ConversationKeyMaterial(cached.keyVersion, cached.key)
         }
 
+        if (!ChatKeyAccessPolicy.shouldProbeExistingKeyBeforeSending(SessionCryptoState.getMasterPrivateKey() != null)) {
+            return provisionNewConversationKey(conversationId, requestedKeyVersion)
+        }
+
         return runCatching {
             ConversationKeyMaterial(requestedKeyVersion, getConversationKey(conversationId, requestedKeyVersion))
         }.getOrElse {
@@ -249,7 +303,11 @@ class ChatRepository(context: Context) {
         val conversation = conversationService.getConversation(authHeader(), conversationId)
         val conversationKey = ChatCrypto.generateConversationKey()
         val latestCachedVersion = ConversationKeyCache.latestVersion(conversationId) ?: 0
-        val newKeyVersion = maxOf(requestedKeyVersion, conversation.currentKeyVersion, latestCachedVersion) + 1
+        val newKeyVersion = ChatKeyRotationPolicy.nextVersion(
+            requestedKeyVersion = requestedKeyVersion,
+            currentServerVersion = conversation.currentKeyVersion,
+            latestCachedVersion = latestCachedVersion
+        )
         val encryptedKeys = buildEncryptedKeys(
             users = conversation.participants,
             conversationKey = conversationKey,
@@ -260,13 +318,43 @@ class ChatRepository(context: Context) {
             conversationId,
             StoreConversationKeysRequest(
                 newKeyVersion = newKeyVersion,
-                reason = "SESSION_WITHOUT_MASTER_KEY",
+                reason = ChatKeyRotationPolicy.SESSION_WITHOUT_MASTER_KEY,
                 encryptedKeys = encryptedKeys
             )
         )
         if (!response.isSuccessful) {
             throw HttpException(response)
         }
+        ConversationKeyCache.put(conversationId, newKeyVersion, conversationKey)
+        return ConversationKeyMaterial(newKeyVersion, conversationKey)
+    }
+
+    private suspend fun rotateConversationKeyMaterial(
+        conversationId: String,
+        requestedKeyVersion: Int,
+        reason: String
+    ): ConversationKeyMaterial {
+        val conversation = conversationService.getConversation(authHeader(), conversationId)
+        val conversationKey = ChatCrypto.generateConversationKey()
+        val newKeyVersion = ChatKeyRotationPolicy.nextVersion(
+            requestedKeyVersion = requestedKeyVersion,
+            currentServerVersion = conversation.currentKeyVersion,
+            latestCachedVersion = ConversationKeyCache.latestVersion(conversationId)
+        )
+        val encryptedKeys = buildEncryptedKeys(
+            users = conversation.participants,
+            conversationKey = conversationKey,
+            keyVersion = newKeyVersion
+        )
+        conversationService.rotateConversationKeys(
+            authHeader(),
+            conversationId,
+            StoreConversationKeysRequest(
+                newKeyVersion = newKeyVersion,
+                reason = reason,
+                encryptedKeys = encryptedKeys
+            )
+        )
         ConversationKeyCache.put(conversationId, newKeyVersion, conversationKey)
         return ConversationKeyMaterial(newKeyVersion, conversationKey)
     }
@@ -304,6 +392,7 @@ class ChatRepository(context: Context) {
                 content = content,
                 isMine = senderId == currentUserId,
                 createdAt = clientCreatedAt ?: serverCreatedAt,
+                keyVersion = keyVersion,
                 canDecrypt = true
             )
         }.getOrElse {
@@ -313,6 +402,7 @@ class ChatRepository(context: Context) {
                 content = "Không thể giải mã tin nhắn này",
                 isMine = senderId == currentUserId,
                 createdAt = clientCreatedAt ?: serverCreatedAt,
+                keyVersion = keyVersion,
                 canDecrypt = false
             )
         }
@@ -325,13 +415,18 @@ class ChatRepository(context: Context) {
             content = "Không thể giải mã tin nhắn này",
             isMine = senderId == currentUserId,
             createdAt = clientCreatedAt ?: serverCreatedAt,
+            keyVersion = keyVersion,
             canDecrypt = false
         )
     }
 
     private fun ConversationResponse.toItem(): ConversationItem {
         val currentUserId = secureStorage.getUserInfo()?.id
-        val directTitle = participants.firstOrNull { it.id != currentUserId }?.displayName
+        val directTitle = if (type == "DIRECT") {
+            participants.firstOrNull { it.id != currentUserId }?.displayName
+        } else {
+            null
+        }
         return ConversationItem(
             id = id,
             title = directTitle ?: ChatCrypto.decodeConversationName(name),

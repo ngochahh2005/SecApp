@@ -10,11 +10,15 @@ internal object ChatSendUiPolicy {
     }
 
     fun shouldReloadMessagesAfterSend(sentRealtime: Boolean): Boolean {
-        return !sentRealtime
+        return false
     }
 
     fun shouldShowPinRecovery(hasUnlockedMasterKey: Boolean): Boolean {
         return !hasUnlockedMasterKey
+    }
+
+    fun shouldLoadHistory(hasUnlockedMasterKey: Boolean): Boolean {
+        return hasUnlockedMasterKey
     }
 
     fun messageScrollTarget(messagesCount: Int): Int? {

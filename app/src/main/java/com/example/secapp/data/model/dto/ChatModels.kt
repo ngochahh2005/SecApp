@@ -133,6 +133,16 @@ data class RealtimeMessageEvent(
     val message: MessageResponse?
 )
 
+data class RealtimeMemberLeftData(
+    val conversationId: String,
+    val leftUserId: String
+)
+
+data class RealtimeMemberLeftEvent(
+    val type: String,
+    val data: RealtimeMemberLeftData?
+)
+
 data class RealtimeErrorEvent(
     val type: String,
     val message: String?
