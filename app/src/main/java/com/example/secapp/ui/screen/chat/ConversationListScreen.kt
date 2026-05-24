@@ -21,9 +21,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -35,6 +37,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -76,6 +79,8 @@ fun ConversationListScreen(
     var isLoading by remember { mutableStateOf(true) }
     var conversations by remember { mutableStateOf<List<ConversationItem>>(emptyList()) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var pendingDeleteConversation by remember { mutableStateOf<ConversationItem?>(null) }
+    var deletingConversationId by remember { mutableStateOf<String?>(null) }
 
     fun loadConversations() {
         coroutineScope.launch {
@@ -91,6 +96,47 @@ fun ConversationListScreen(
 
     LaunchedEffect(refreshKey) {
         loadConversations()
+    }
+
+    fun deleteConversation(conversation: ConversationItem) {
+        coroutineScope.launch {
+            deletingConversationId = conversation.id
+            errorMessage = null
+            when (val result = repository.deleteConversation(conversation.id)) {
+                is ChatResult.Success -> {
+                    conversations = conversations.filterNot { it.id == conversation.id }
+                    pendingDeleteConversation = null
+                }
+                is ChatResult.Failure -> errorMessage = result.message
+            }
+            deletingConversationId = null
+        }
+    }
+
+    pendingDeleteConversation?.let { conversation ->
+        AlertDialog(
+            onDismissRequest = {
+                if (deletingConversationId == null) pendingDeleteConversation = null
+            },
+            title = { Text("Xóa cuộc trò chuyện?") },
+            text = { Text("Cuộc trò chuyện sẽ được xóa khỏi danh sách của bạn.") },
+            confirmButton = {
+                TextButton(
+                    onClick = { deleteConversation(conversation) },
+                    enabled = deletingConversationId == null
+                ) {
+                    Text(if (deletingConversationId != null) "Đang xóa..." else "Xóa")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { pendingDeleteConversation = null },
+                    enabled = deletingConversationId == null
+                ) {
+                    Text("Hủy")
+                }
+            }
+        )
     }
 
     Scaffold(
@@ -145,7 +191,8 @@ fun ConversationListScreen(
                         items(conversations, key = { it.id }) { conversation ->
                             ConversationRow(
                                 conversation = conversation,
-                                onClick = { onOpenConversation(conversation) }
+                                onClick = { onOpenConversation(conversation) },
+                                onDelete = { pendingDeleteConversation = conversation }
                             )
                         }
                     }
@@ -277,7 +324,11 @@ private fun EmptyConversationState(onCreateConversation: () -> Unit) {
 }
 
 @Composable
-private fun ConversationRow(conversation: ConversationItem, onClick: () -> Unit) {
+private fun ConversationRow(
+    conversation: ConversationItem,
+    onClick: () -> Unit,
+    onDelete: () -> Unit
+) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -337,7 +388,15 @@ private fun ConversationRow(conversation: ConversationItem, onClick: () -> Unit)
                 )
             }
 
-            Spacer(modifier = Modifier.width(6.dp))
+            IconButton(onClick = onDelete) {
+                Icon(
+                    Icons.Default.Delete,
+                    contentDescription = "Xóa cuộc trò chuyện",
+                    tint = Color(0xFFB42318)
+                )
+            }
+
+            Spacer(modifier = Modifier.width(2.dp))
             Icon(
                 Icons.Default.KeyboardArrowRight,
                 contentDescription = null,

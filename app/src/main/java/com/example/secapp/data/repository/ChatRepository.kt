@@ -1,6 +1,7 @@
 package com.example.secapp.data.repository
 
 import android.content.Context
+import com.example.secapp.data.local.security.ChatPayloadAttachment
 import com.example.secapp.data.local.security.AuthSessionState
 import com.example.secapp.data.local.security.ChatCrypto
 import com.example.secapp.data.local.security.ConversationKeyCache
@@ -9,10 +10,12 @@ import com.example.secapp.data.local.security.SessionCryptoState
 import com.example.secapp.data.model.dto.ConversationResponse
 import com.example.secapp.data.model.dto.CreateConversationRequest
 import com.example.secapp.data.model.dto.EncryptedConversationKeyRequest
+import com.example.secapp.data.model.dto.MessageAttachmentRequest
 import com.example.secapp.data.model.dto.MessageResponse
 import com.example.secapp.data.model.dto.RealtimeMessageRequest
 import com.example.secapp.data.model.dto.SendMessageRequest
 import com.example.secapp.data.model.dto.StoreConversationKeysRequest
+import com.example.secapp.data.model.dto.UpdateMessageRequest
 import com.example.secapp.data.model.dto.UserResponse
 import com.example.secapp.data.remote.NetworkConfig
 import com.google.gson.Gson
@@ -48,7 +51,26 @@ data class ChatMessageItem(
     val isMine: Boolean,
     val createdAt: String?,
     val keyVersion: Int,
-    val canDecrypt: Boolean
+    val canDecrypt: Boolean,
+    val messageType: String = "TEXT",
+    val attachments: List<ChatAttachmentItem> = emptyList(),
+    val isEdited: Boolean = false
+)
+
+data class ChatAttachmentDraft(
+    val id: String,
+    val displayName: String,
+    val mimeType: String,
+    val sizeBytes: Long,
+    val base64Data: String
+)
+
+data class ChatAttachmentItem(
+    val id: String,
+    val displayName: String,
+    val mimeType: String,
+    val sizeBytes: Long,
+    val base64Data: String
 )
 
 private data class ConversationKeyMaterial(
@@ -70,6 +92,16 @@ class ChatRepository(context: Context) {
         }.fold(
             onSuccess = { ChatResult.Success(it) },
             onFailure = { ChatResult.Failure(readableApiError(it, "Không tải được danh sách chat")) }
+        )
+    }
+
+    suspend fun deleteConversation(conversationId: String): ChatResult<Unit> = withContext(Dispatchers.IO) {
+        return@withContext runCatching {
+            conversationService.deleteConversation(authHeader(), conversationId)
+            Unit
+        }.fold(
+            onSuccess = { ChatResult.Success(Unit) },
+            onFailure = { ChatResult.Failure(readableApiError(it, "Không xóa được cuộc trò chuyện")) }
         )
     }
 
@@ -165,10 +197,21 @@ class ChatRepository(context: Context) {
         )
     }
 
-    suspend fun sendTextMessage(conversationId: String, keyVersion: Int, content: String): ChatResult<ChatMessageItem> = withContext(Dispatchers.IO) {
-        if (content.isBlank()) return@withContext ChatResult.Failure("Tin nhắn không được để trống")
+    suspend fun sendTextMessage(conversationId: String, keyVersion: Int, content: String): ChatResult<ChatMessageItem> {
+        return sendMessage(conversationId, keyVersion, content, emptyList())
+    }
+
+    suspend fun sendMessage(
+        conversationId: String,
+        keyVersion: Int,
+        content: String,
+        attachments: List<ChatAttachmentDraft>
+    ): ChatResult<ChatMessageItem> = withContext(Dispatchers.IO) {
+        if (content.isBlank() && attachments.isEmpty()) {
+            return@withContext ChatResult.Failure("Tin nhắn không được để trống")
+        }
         return@withContext runCatching {
-            val request = buildSendMessageRequest(conversationId, keyVersion, content)
+            val request = buildSendMessageRequest(conversationId, keyVersion, content, attachments)
             val response = messageService.sendMessage(authHeader(), conversationId, request)
             ChatMessageItem(
                 id = response.messageId,
@@ -177,7 +220,9 @@ class ChatRepository(context: Context) {
                 isMine = true,
                 createdAt = request.clientCreatedAt,
                 keyVersion = request.keyVersion,
-                canDecrypt = true
+                canDecrypt = true,
+                messageType = request.messageType,
+                attachments = attachments.map { it.toItem() }
             )
         }.fold(
             onSuccess = { ChatResult.Success(it) },
@@ -185,14 +230,64 @@ class ChatRepository(context: Context) {
         )
     }
 
+    suspend fun editMessage(
+        conversationId: String,
+        message: ChatMessageItem,
+        updatedContent: String
+    ): ChatResult<ChatMessageItem> = withContext(Dispatchers.IO) {
+        if (updatedContent.isBlank() && message.attachments.isEmpty()) {
+            return@withContext ChatResult.Failure("Tin nhắn không được để trống")
+        }
+        return@withContext runCatching {
+            val conversationKey = getConversationKeyForRead(conversationId, message.keyVersion)
+                ?: throw IllegalStateException("Không thể lấy khóa để sửa tin nhắn này")
+            val encrypted = ChatCrypto.encryptMessage(
+                content = updatedContent.trim(),
+                clientCreatedAt = message.createdAt ?: utcNow(),
+                conversationKey = conversationKey,
+                aadValue = conversationId,
+                attachments = message.attachments.map { it.toPayload() }
+            )
+            val response = messageService.updateMessage(
+                authHeader(),
+                conversationId,
+                message.id,
+                UpdateMessageRequest(
+                    cipherData = encrypted.cipherData,
+                    iv = encrypted.iv,
+                    aad = encrypted.aad,
+                    keyVersion = message.keyVersion,
+                    messageType = message.messageType
+                )
+            )
+            response.toItem(currentUserId(), conversationKey)
+        }.fold(
+            onSuccess = { ChatResult.Success(it) },
+            onFailure = { ChatResult.Failure(readableApiError(it, "Không sửa được tin nhắn")) }
+        )
+    }
+
+    suspend fun deleteMessage(conversationId: String, messageId: String): ChatResult<Unit> = withContext(Dispatchers.IO) {
+        return@withContext runCatching {
+            messageService.deleteMessage(authHeader(), conversationId, messageId)
+            Unit
+        }.fold(
+            onSuccess = { ChatResult.Success(Unit) },
+            onFailure = { ChatResult.Failure(readableApiError(it, "Không xóa được tin nhắn")) }
+        )
+    }
+
     suspend fun buildRealtimeMessageRequest(
         conversationId: String,
         keyVersion: Int,
-        content: String
+        content: String,
+        attachments: List<ChatAttachmentDraft> = emptyList()
     ): ChatResult<RealtimeMessageRequest> = withContext(Dispatchers.IO) {
-        if (content.isBlank()) return@withContext ChatResult.Failure("Tin nhắn không được để trống")
+        if (content.isBlank() && attachments.isEmpty()) {
+            return@withContext ChatResult.Failure("Tin nhắn không được để trống")
+        }
         return@withContext runCatching {
-            val sendRequest = buildSendMessageRequest(conversationId, keyVersion, content)
+            val sendRequest = buildSendMessageRequest(conversationId, keyVersion, content, attachments)
             RealtimeMessageRequest(
                 conversationId = conversationId,
                 senderId = currentUserId(),
@@ -362,38 +457,48 @@ class ChatRepository(context: Context) {
     private suspend fun buildSendMessageRequest(
         conversationId: String,
         keyVersion: Int,
-        content: String
+        content: String,
+        attachments: List<ChatAttachmentDraft> = emptyList()
     ): SendMessageRequest {
         val conversationKey = getConversationKeyForSending(conversationId, keyVersion)
         val createdAt = utcNow()
+        val clientMessageId = UUID.randomUUID().toString()
+        val payloadAttachments = attachments.map { it.toPayload() }
         val encrypted = ChatCrypto.encryptMessage(
             content = content.trim(),
             clientCreatedAt = createdAt,
             conversationKey = conversationKey.key,
-            aadValue = conversationId
+            aadValue = conversationId,
+            attachments = payloadAttachments
         )
         return SendMessageRequest(
-            clientMessageId = UUID.randomUUID().toString(),
+            clientMessageId = clientMessageId,
             cipherData = encrypted.cipherData,
             iv = encrypted.iv,
             aad = encrypted.aad,
             keyVersion = conversationKey.keyVersion,
-            messageType = "TEXT",
-            clientCreatedAt = createdAt
+            messageType = messageTypeFor(attachments),
+            clientCreatedAt = createdAt,
+            attachments = payloadAttachments
+                .map { it.toAttachmentRequest(conversationId, clientMessageId, conversationKey.key) }
+                .ifEmpty { null }
         )
     }
 
     private fun MessageResponse.toItem(currentUserId: String, conversationKey: SecretKeySpec): ChatMessageItem {
         return runCatching {
-            val content = ChatCrypto.decryptMessageContent(cipherData, iv, aad, conversationKey)
+            val payload = ChatCrypto.decryptMessagePayload(cipherData, iv, aad, conversationKey)
             ChatMessageItem(
                 id = id,
                 senderId = senderId,
-                content = content,
+                content = payload.content,
                 isMine = senderId == currentUserId,
-                createdAt = clientCreatedAt ?: serverCreatedAt,
+                createdAt = payload.clientCreatedAt ?: clientCreatedAt ?: serverCreatedAt,
                 keyVersion = keyVersion,
-                canDecrypt = true
+                canDecrypt = true,
+                messageType = messageType,
+                attachments = payload.attachments.map { it.toItem() },
+                isEdited = editedAt != null
             )
         }.getOrElse {
             ChatMessageItem(
@@ -403,7 +508,8 @@ class ChatRepository(context: Context) {
                 isMine = senderId == currentUserId,
                 createdAt = clientCreatedAt ?: serverCreatedAt,
                 keyVersion = keyVersion,
-                canDecrypt = false
+                canDecrypt = false,
+                messageType = messageType
             )
         }
     }
@@ -416,8 +522,78 @@ class ChatRepository(context: Context) {
             isMine = senderId == currentUserId,
             createdAt = clientCreatedAt ?: serverCreatedAt,
             keyVersion = keyVersion,
-            canDecrypt = false
+            canDecrypt = false,
+            messageType = messageType
         )
+    }
+
+    private fun ChatAttachmentDraft.toPayload(): ChatPayloadAttachment {
+        return ChatPayloadAttachment(
+            id = id,
+            displayName = displayName,
+            mimeType = mimeType,
+            sizeBytes = sizeBytes,
+            base64Data = base64Data
+        )
+    }
+
+    private fun ChatAttachmentDraft.toItem(): ChatAttachmentItem {
+        return ChatAttachmentItem(
+            id = id,
+            displayName = displayName,
+            mimeType = mimeType,
+            sizeBytes = sizeBytes,
+            base64Data = base64Data
+        )
+    }
+
+    private fun ChatPayloadAttachment.toItem(): ChatAttachmentItem {
+        return ChatAttachmentItem(
+            id = id,
+            displayName = displayName,
+            mimeType = mimeType,
+            sizeBytes = sizeBytes,
+            base64Data = base64Data
+        )
+    }
+
+    private fun ChatAttachmentItem.toPayload(): ChatPayloadAttachment {
+        return ChatPayloadAttachment(
+            id = id,
+            displayName = displayName,
+            mimeType = mimeType,
+            sizeBytes = sizeBytes,
+            base64Data = base64Data
+        )
+    }
+
+    private fun ChatPayloadAttachment.toAttachmentRequest(
+        conversationId: String,
+        clientMessageId: String,
+        conversationKey: SecretKeySpec
+    ): MessageAttachmentRequest {
+        val storageKey = "local/$conversationId/$clientMessageId/$id"
+        return MessageAttachmentRequest(
+            storageProvider = "LOCAL",
+            storageKey = storageKey,
+            encryptedFileKey = ChatCrypto.randomAttachmentFileKey(),
+            encryptedMetadata = ChatCrypto.encryptAttachmentMetadata(
+                attachment = this,
+                conversationKey = conversationKey,
+                aadValue = storageKey
+            )
+        )
+    }
+
+    private fun messageTypeFor(attachments: List<ChatAttachmentDraft>): String {
+        val mimeType = attachments.firstOrNull()?.mimeType.orEmpty().lowercase()
+        return when {
+            attachments.isEmpty() -> "TEXT"
+            mimeType.startsWith("image/") -> "IMAGE"
+            mimeType.startsWith("video/") -> "VIDEO"
+            mimeType.startsWith("audio/") -> "AUDIO"
+            else -> "FILE"
+        }
     }
 
     private fun ConversationResponse.toItem(): ConversationItem {

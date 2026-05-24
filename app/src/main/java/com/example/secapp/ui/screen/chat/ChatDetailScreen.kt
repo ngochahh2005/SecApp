@@ -1,6 +1,14 @@
 package com.example.secapp.ui.screen.chat
 
+import android.content.Context
+import android.graphics.BitmapFactory
+import android.net.Uri
+import android.provider.OpenableColumns
+import android.util.Base64
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image as ComposeImage
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,25 +23,39 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.AudioFile
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -47,10 +69,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.example.secapp.data.repository.ChatAttachmentDraft
+import com.example.secapp.data.repository.ChatAttachmentItem
 import com.example.secapp.data.local.security.SessionCryptoState
 import com.example.secapp.data.remote.ChatRealtimeClient
 import com.example.secapp.data.repository.AuthRepository
@@ -62,6 +89,8 @@ import com.example.secapp.data.repository.ChatResult
 import com.example.secapp.ui.components.PinCodeInput
 import com.example.secapp.ui.screen.auth.PinUnlockAction
 import com.example.secapp.ui.screen.auth.PinUnlockPolicy
+import java.io.ByteArrayOutputStream
+import java.util.UUID
 import kotlinx.coroutines.launch
 
 private val ChatBackground = Color(0xFFF4F7FB)
@@ -86,8 +115,12 @@ fun ChatDetailScreen(
     var activeKeyVersion by remember(conversationId, keyVersion) { mutableIntStateOf(keyVersion) }
     var messages by remember { mutableStateOf<List<ChatMessageItem>>(emptyList()) }
     var input by remember { mutableStateOf("") }
+    var attachmentDrafts by remember { mutableStateOf<List<ChatAttachmentDraft>>(emptyList()) }
+    var editingMessage by remember { mutableStateOf<ChatMessageItem?>(null) }
+    var pendingDeleteMessage by remember { mutableStateOf<ChatMessageItem?>(null) }
     var isLoading by remember { mutableStateOf(true) }
     var isSending by remember { mutableStateOf(false) }
+    var isDeletingMessage by remember { mutableStateOf(false) }
     var isRotatingKey by remember { mutableStateOf(false) }
     var isUnlockingPin by remember { mutableStateOf(false) }
     var hasUnlockedMasterKey by remember { mutableStateOf(SessionCryptoState.getMasterPrivateKey() != null) }
@@ -96,6 +129,29 @@ fun ChatDetailScreen(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
     var realtimeClient by remember { mutableStateOf<ChatRealtimeClient?>(null) }
+    val attachmentPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetMultipleContents()
+    ) { uris ->
+        val availableSlots = ChatAttachmentPolicy.MAX_ATTACHMENTS - attachmentDrafts.size
+        if (availableSlots <= 0) {
+            errorMessage = "Bạn chỉ có thể gửi tối đa ${ChatAttachmentPolicy.MAX_ATTACHMENTS} file mỗi lần."
+            return@rememberLauncherForActivityResult
+        }
+
+        val picked = uris.take(availableSlots).mapNotNull { uri ->
+            when (val result = context.readAttachmentDraft(uri)) {
+                is AttachmentPickResult.Success -> result.draft
+                is AttachmentPickResult.Failure -> {
+                    errorMessage = result.message
+                    null
+                }
+            }
+        }
+        if (picked.isNotEmpty()) {
+            attachmentDrafts = attachmentDrafts + picked
+            errorMessage = null
+        }
+    }
 
     fun loadMessages() {
         if (!ChatSendUiPolicy.shouldLoadHistory(hasUnlockedMasterKey)) {
@@ -137,14 +193,74 @@ fun ChatDetailScreen(
         }
     }
 
-    fun sendMessage() {
-        val text = input
-        if (!ChatSendUiPolicy.canStartSend(text, isSending)) return
+    fun startEdit(message: ChatMessageItem) {
+        if (!ChatMessageActionPolicy.canEdit(message.isMine, message.canDecrypt)) return
+        editingMessage = message
+        input = message.content
+        attachmentDrafts = emptyList()
+        errorMessage = null
+        statusMessage = null
+    }
+
+    fun cancelEdit() {
+        editingMessage = null
+        input = ""
+        errorMessage = null
+    }
+
+    fun deleteSelectedMessage() {
+        val message = pendingDeleteMessage ?: return
+        if (isDeletingMessage) return
+        coroutineScope.launch {
+            isDeletingMessage = true
+            errorMessage = null
+            when (val result = repository.deleteMessage(conversationId, message.id)) {
+                is ChatResult.Success -> {
+                    messages = messages.filterNot { it.id == message.id }
+                    pendingDeleteMessage = null
+                    statusMessage = "Đã xóa tin nhắn"
+                }
+                is ChatResult.Failure -> errorMessage = result.message
+            }
+            isDeletingMessage = false
+        }
+    }
+
+    fun submitEdit(message: ChatMessageItem, updatedText: String) {
+        if (isSending) return
         isSending = true
         coroutineScope.launch {
             try {
                 errorMessage = null
-                when (val realtimeRequest = repository.buildRealtimeMessageRequest(conversationId, activeKeyVersion, text)) {
+                when (val result = repository.editMessage(conversationId, message, updatedText)) {
+                    is ChatResult.Success -> {
+                        messages = messages.map { if (it.id == message.id) result.value else it }
+                        editingMessage = null
+                        input = ""
+                        statusMessage = "Đã cập nhật tin nhắn"
+                    }
+                    is ChatResult.Failure -> errorMessage = result.message
+                }
+            } finally {
+                isSending = false
+            }
+        }
+    }
+
+    fun sendMessage() {
+        editingMessage?.let { message ->
+            submitEdit(message, input)
+            return
+        }
+
+        val text = input
+        val drafts = attachmentDrafts
+        if (!ChatSendUiPolicy.canStartSend(text, drafts.size, isSending)) return
+        isSending = true
+        coroutineScope.launch {
+            try {
+                errorMessage = null
+                when (val realtimeRequest = repository.buildRealtimeMessageRequest(conversationId, activeKeyVersion, text, drafts)) {
                     is ChatResult.Success -> {
                         activeKeyVersion = realtimeRequest.value.keyVersion
                         val sentRealtime = if (ChatSendUiPolicy.shouldAttemptRealtime(realtimeClient?.isConnected == true)) {
@@ -154,10 +270,12 @@ fun ChatDetailScreen(
                         }
                         if (sentRealtime) {
                             input = ""
+                            attachmentDrafts = emptyList()
                         } else {
-                            when (val restResult = repository.sendTextMessage(conversationId, activeKeyVersion, text)) {
+                            when (val restResult = repository.sendMessage(conversationId, activeKeyVersion, text, drafts)) {
                                 is ChatResult.Success -> {
                                     input = ""
+                                    attachmentDrafts = emptyList()
                                     messages = (messages + restResult.value).distinctBy { it.id }
                                 }
                                 is ChatResult.Failure -> errorMessage = restResult.message
@@ -261,6 +379,30 @@ fun ChatDetailScreen(
 
     val showPinRecovery = ChatSendUiPolicy.shouldShowPinRecovery(hasUnlockedMasterKey)
 
+    pendingDeleteMessage?.let {
+        AlertDialog(
+            onDismissRequest = { if (!isDeletingMessage) pendingDeleteMessage = null },
+            title = { Text("Xóa tin nhắn?") },
+            text = { Text("Tin nhắn sẽ được xóa khỏi cuộc trò chuyện của bạn.") },
+            confirmButton = {
+                TextButton(
+                    onClick = { deleteSelectedMessage() },
+                    enabled = !isDeletingMessage
+                ) {
+                    Text(if (isDeletingMessage) "Đang xóa..." else "Xóa")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { pendingDeleteMessage = null },
+                    enabled = !isDeletingMessage
+                ) {
+                    Text("Hủy")
+                }
+            }
+        )
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -293,6 +435,12 @@ fun ChatDetailScreen(
             )
         }
 
+        editingMessage?.let {
+            EditModeBanner(
+                onCancel = { cancelEdit() }
+            )
+        }
+
         errorMessage?.let {
             Spacer(modifier = Modifier.height(10.dp))
             ErrorMessage(message = it)
@@ -318,7 +466,11 @@ fun ChatDetailScreen(
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 16.dp)
                 ) {
                     items(messages, key = { it.id }) { message ->
-                        MessageBubble(message)
+                        MessageBubble(
+                            message = message,
+                            onEdit = { startEdit(message) },
+                            onDelete = { pendingDeleteMessage = message }
+                        )
                     }
                 }
             }
@@ -326,8 +478,14 @@ fun ChatDetailScreen(
 
         MessageInputBar(
             input = input,
+            attachments = attachmentDrafts,
             isSending = isSending,
+            isEditing = editingMessage != null,
             onInputChange = { input = it },
+            onAttach = { attachmentPicker.launch("*/*") },
+            onRemoveAttachment = { draftId ->
+                attachmentDrafts = attachmentDrafts.filterNot { it.id == draftId }
+            },
             onSend = { sendMessage() }
         )
     }
@@ -522,6 +680,43 @@ private fun PinRecoveryPanel(
 }
 
 @Composable
+private fun EditModeBanner(onCancel: () -> Unit) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp)
+            .padding(bottom = 10.dp),
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFE7F4F1)),
+        border = BorderStroke(1.dp, Color(0xFFB7E4DA)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Default.Edit,
+                contentDescription = null,
+                tint = ChatAccent,
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Text(
+                text = "Đang sửa tin nhắn",
+                color = ChatPrimary,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = onCancel) {
+                Text("Hủy")
+            }
+        }
+    }
+}
+
+@Composable
 private fun StatusMessage(message: String) {
     Card(
         modifier = Modifier
@@ -617,53 +812,148 @@ private fun EmptyMessageState() {
 @Composable
 private fun MessageInputBar(
     input: String,
+    attachments: List<ChatAttachmentDraft>,
     isSending: Boolean,
+    isEditing: Boolean,
     onInputChange: (String) -> Unit,
+    onAttach: () -> Unit,
+    onRemoveAttachment: (String) -> Unit,
     onSend: () -> Unit
 ) {
-    val canSend = ChatSendUiPolicy.canStartSend(input, isSending)
+    val canSend = ChatSendUiPolicy.canStartSend(input, attachments.size, isSending)
 
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .background(ChatSurface)
-            .padding(horizontal = 14.dp, vertical = 12.dp),
+            .padding(horizontal = 14.dp, vertical = 12.dp)
+    ) {
+        if (attachments.isNotEmpty()) {
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(bottom = 10.dp)
+            ) {
+                items(attachments, key = { it.id }) { attachment ->
+                    AttachmentDraftChip(
+                        attachment = attachment,
+                        enabled = !isSending,
+                        onRemove = { onRemoveAttachment(attachment.id) }
+                    )
+                }
+            }
+        }
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(
+                onClick = onAttach,
+                enabled = !isSending && !isEditing && ChatAttachmentPolicy.canAttachMore(attachments.size),
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFFF2F4F7))
+            ) {
+                Icon(
+                    Icons.Default.AttachFile,
+                    contentDescription = "Đính kèm file",
+                    tint = if (!isEditing) ChatPrimary else Color(0xFF98A2B3)
+                )
+            }
+
+            Spacer(modifier = Modifier.width(10.dp))
+
+            OutlinedTextField(
+                value = input,
+                onValueChange = onInputChange,
+                modifier = Modifier.weight(1f),
+                placeholder = {
+                    Text(if (isEditing) "Cập nhật tin nhắn" else "Nhập tin nhắn")
+                },
+                enabled = !isSending,
+                minLines = 1,
+                maxLines = 4,
+                shape = RoundedCornerShape(8.dp)
+            )
+
+            Spacer(modifier = Modifier.width(10.dp))
+
+            IconButton(
+                onClick = onSend,
+                enabled = canSend,
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(if (canSend) ChatAccent else Color(0xFFD0D5DD))
+            ) {
+                Icon(
+                    Icons.Default.Send,
+                    contentDescription = if (isEditing) "Cập nhật" else "Gửi",
+                    tint = Color.White
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AttachmentDraftChip(
+    attachment: ChatAttachmentDraft,
+    enabled: Boolean,
+    onRemove: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .background(Color(0xFFF2F4F7), RoundedCornerShape(8.dp))
+            .padding(start = 10.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        OutlinedTextField(
-            value = input,
-            onValueChange = onInputChange,
-            modifier = Modifier.weight(1f),
-            placeholder = { Text("Nhập tin nhắn") },
-            enabled = !isSending,
-            minLines = 1,
-            maxLines = 4,
-            shape = RoundedCornerShape(8.dp)
+        Icon(
+            iconForMimeType(attachment.mimeType),
+            contentDescription = null,
+            tint = ChatAccent,
+            modifier = Modifier.size(18.dp)
         )
-
-        Spacer(modifier = Modifier.width(10.dp))
-
+        Spacer(modifier = Modifier.width(6.dp))
+        Column(modifier = Modifier.width(150.dp)) {
+            Text(
+                text = attachment.displayName,
+                color = ChatPrimary,
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = attachment.sizeBytes.formatFileSize(),
+                color = ChatMutedText,
+                style = MaterialTheme.typography.labelSmall
+            )
+        }
         IconButton(
-            onClick = onSend,
-            enabled = canSend,
-            modifier = Modifier
-                .size(48.dp)
-                .clip(CircleShape)
-                .background(if (canSend) ChatAccent else Color(0xFFD0D5DD))
+            onClick = onRemove,
+            enabled = enabled,
+            modifier = Modifier.size(30.dp)
         ) {
             Icon(
-                Icons.Default.Send,
-                contentDescription = "Gửi",
-                tint = Color.White
+                Icons.Default.Close,
+                contentDescription = "Bỏ file",
+                tint = ChatMutedText,
+                modifier = Modifier.size(16.dp)
             )
         }
     }
 }
 
 @Composable
-private fun MessageBubble(message: ChatMessageItem) {
+private fun MessageBubble(
+    message: ChatMessageItem,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
     val messageTime = message.createdAt?.takeIf { it.isNotBlank() }?.asMessageTime()
-    val metaText = listOfNotNull("Key v${message.keyVersion}", messageTime).joinToString(" • ")
+    val editText = if (message.isEdited) "đã sửa" else null
+    val metaText = listOfNotNull("Key v${message.keyVersion}", messageTime, editText).joinToString(" • ")
+    var showMenu by remember { mutableStateOf(false) }
+    val canEdit = ChatMessageActionPolicy.canEdit(message.isMine, message.canDecrypt)
+    val canDelete = ChatMessageActionPolicy.canDelete(message.isMine)
 
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -679,11 +969,73 @@ private fun MessageBubble(message: ChatMessageItem) {
             modifier = Modifier.fillMaxWidth(0.82f)
         ) {
             Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                Text(
-                    text = message.content,
-                    color = if (message.isMine) Color.White else Color(0xFF182230),
-                    style = MaterialTheme.typography.bodyMedium
-                )
+                Row(verticalAlignment = Alignment.Top) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        if (message.attachments.isNotEmpty()) {
+                            MessageAttachments(
+                                attachments = message.attachments,
+                                isMine = message.isMine
+                            )
+                            if (message.content.isNotBlank()) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                            }
+                        }
+
+                        if (message.content.isNotBlank() || message.attachments.isEmpty()) {
+                            Text(
+                                text = message.content.ifBlank { "Đã gửi file" },
+                                color = if (message.isMine) Color.White else Color(0xFF182230),
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                    }
+
+                    if (canEdit || canDelete) {
+                        Box {
+                            IconButton(
+                                onClick = { showMenu = true },
+                                modifier = Modifier.size(30.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.MoreVert,
+                                    contentDescription = "Tùy chọn tin nhắn",
+                                    tint = if (message.isMine) Color(0xFFD7E3FF) else ChatMutedText,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = showMenu,
+                                onDismissRequest = { showMenu = false }
+                            ) {
+                                if (canEdit) {
+                                    DropdownMenuItem(
+                                        text = { Text("Sửa") },
+                                        leadingIcon = {
+                                            Icon(Icons.Default.Edit, contentDescription = null)
+                                        },
+                                        onClick = {
+                                            showMenu = false
+                                            onEdit()
+                                        }
+                                    )
+                                }
+                                if (canDelete) {
+                                    DropdownMenuItem(
+                                        text = { Text("Xóa") },
+                                        leadingIcon = {
+                                            Icon(Icons.Default.Delete, contentDescription = null)
+                                        },
+                                        onClick = {
+                                            showMenu = false
+                                            onDelete()
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if (!message.canDecrypt) {
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
@@ -706,6 +1058,153 @@ private fun MessageBubble(message: ChatMessageItem) {
     }
 }
 
+@Composable
+private fun MessageAttachments(
+    attachments: List<ChatAttachmentItem>,
+    isMine: Boolean
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        attachments.forEach { attachment ->
+            if (attachment.mimeType.startsWith("image/", ignoreCase = true)) {
+                val bitmap = remember(attachment.base64Data) {
+                    runCatching {
+                        val bytes = Base64.decode(attachment.base64Data, Base64.DEFAULT)
+                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    }.getOrNull()
+                }
+                if (bitmap != null) {
+                    ComposeImage(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = attachment.displayName,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(180.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                    )
+                } else {
+                    AttachmentFileCard(attachment = attachment, isMine = isMine)
+                }
+            } else {
+                AttachmentFileCard(attachment = attachment, isMine = isMine)
+            }
+        }
+    }
+}
+
+@Composable
+private fun AttachmentFileCard(
+    attachment: ChatAttachmentItem,
+    isMine: Boolean
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(
+                color = if (isMine) Color(0x1AFFFFFF) else Color(0xFFF2F4F7),
+                shape = RoundedCornerShape(8.dp)
+            )
+            .padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .background(
+                    color = if (isMine) Color(0x26FFFFFF) else Color(0xFFE7F4F1),
+                    shape = CircleShape
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                iconForMimeType(attachment.mimeType),
+                contentDescription = null,
+                tint = if (isMine) Color.White else ChatAccent,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+        Spacer(modifier = Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = attachment.displayName,
+                color = if (isMine) Color.White else ChatPrimary,
+                style = MaterialTheme.typography.labelLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = attachment.sizeBytes.formatFileSize(),
+                color = if (isMine) Color(0xFFD7E3FF) else ChatMutedText,
+                style = MaterialTheme.typography.labelSmall
+            )
+        }
+    }
+}
+
 private fun String.asMessageTime(): String {
     return replace('T', ' ').take(16)
+}
+
+private fun iconForMimeType(mimeType: String): ImageVector {
+    return when {
+        mimeType.startsWith("image/", ignoreCase = true) -> Icons.Default.Image
+        mimeType.startsWith("video/", ignoreCase = true) -> Icons.Default.Movie
+        mimeType.startsWith("audio/", ignoreCase = true) -> Icons.Default.AudioFile
+        else -> Icons.Default.Description
+    }
+}
+
+private fun Long.formatFileSize(): String {
+    if (this < 1024) return "$this B"
+    val kb = this / 1024.0
+    if (kb < 1024) return String.format("%.1f KB", kb)
+    return String.format("%.1f MB", kb / 1024.0)
+}
+
+private sealed class AttachmentPickResult {
+    data class Success(val draft: ChatAttachmentDraft) : AttachmentPickResult()
+    data class Failure(val message: String) : AttachmentPickResult()
+}
+
+private fun Context.readAttachmentDraft(uri: Uri): AttachmentPickResult {
+    val resolver = contentResolver
+    val mimeType = resolver.getType(uri) ?: "application/octet-stream"
+    val displayName = resolver.query(uri, null, null, null, null)?.use { cursor ->
+        val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+        if (cursor.moveToFirst() && nameIndex >= 0) cursor.getString(nameIndex) else null
+    } ?: "media-${System.currentTimeMillis()}"
+
+    val bytes = runCatching {
+        resolver.openInputStream(uri)?.use { input ->
+            val output = ByteArrayOutputStream()
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            var total = 0L
+            while (true) {
+                val read = input.read(buffer)
+                if (read == -1) break
+                total += read
+                if (total > ChatAttachmentPolicy.MAX_ATTACHMENT_BYTES) {
+                    throw IllegalArgumentException("File vượt quá giới hạn")
+                }
+                output.write(buffer, 0, read)
+            }
+            output.toByteArray()
+        } ?: ByteArray(0)
+    }.getOrElse {
+        return AttachmentPickResult.Failure("Không đọc được file $displayName")
+    }
+
+    if (!ChatAttachmentPolicy.canAcceptFile(bytes.size.toLong())) {
+        return AttachmentPickResult.Failure("File $displayName vượt quá giới hạn 2 MB")
+    }
+
+    return AttachmentPickResult.Success(
+        ChatAttachmentDraft(
+            id = UUID.randomUUID().toString(),
+            displayName = displayName,
+            mimeType = mimeType,
+            sizeBytes = bytes.size.toLong(),
+            base64Data = Base64.encodeToString(bytes, Base64.NO_WRAP)
+        )
+    )
 }

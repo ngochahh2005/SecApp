@@ -7,6 +7,7 @@ import com.example.secapp.data.model.dto.EncryptedConversationKeyResponse
 import com.example.secapp.data.model.dto.StoreConversationKeysRequest
 import retrofit2.Response
 import retrofit2.http.Body
+import retrofit2.http.DELETE
 import retrofit2.http.GET
 import retrofit2.http.Header
 import retrofit2.http.POST
@@ -51,5 +52,11 @@ interface ConversationService {
         @Header("Authorization") authorization: String,
         @Path("conversationId") conversationId: String,
         @Body request: StoreConversationKeysRequest
+    ): ApiMessageResponse
+
+    @DELETE("api/v1/conversations/{conversationId}")
+    suspend fun deleteConversation(
+        @Header("Authorization") authorization: String,
+        @Path("conversationId") conversationId: String
     ): ApiMessageResponse
 }
