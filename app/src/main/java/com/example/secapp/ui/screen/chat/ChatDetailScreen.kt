@@ -29,8 +29,10 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ExitToApp
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AttachFile
-import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -39,9 +41,9 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
-import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -86,6 +88,8 @@ import com.example.secapp.data.repository.ChatKeyRotationPolicy
 import com.example.secapp.data.repository.ChatMessageItem
 import com.example.secapp.data.repository.ChatRepository
 import com.example.secapp.data.repository.ChatResult
+import com.example.secapp.data.repository.ConversationItem
+import com.example.secapp.data.model.dto.UserResponse
 import com.example.secapp.ui.components.PinCodeInput
 import com.example.secapp.ui.screen.auth.PinUnlockAction
 import com.example.secapp.ui.screen.auth.PinUnlockPolicy
@@ -113,14 +117,18 @@ fun ChatDetailScreen(
     val coroutineScope = rememberCoroutineScope()
     val messageListState = rememberLazyListState()
     var activeKeyVersion by remember(conversationId, keyVersion) { mutableIntStateOf(keyVersion) }
+    var conversation by remember { mutableStateOf<ConversationItem?>(null) }
     var messages by remember { mutableStateOf<List<ChatMessageItem>>(emptyList()) }
+    var deliveryStatuses by remember { mutableStateOf<Map<String, MessageDeliveryStatus>>(emptyMap()) }
     var input by remember { mutableStateOf("") }
     var attachmentDrafts by remember { mutableStateOf<List<ChatAttachmentDraft>>(emptyList()) }
     var editingMessage by remember { mutableStateOf<ChatMessageItem?>(null) }
     var pendingDeleteMessage by remember { mutableStateOf<ChatMessageItem?>(null) }
+    var showMembersDialog by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(true) }
     var isSending by remember { mutableStateOf(false) }
     var isDeletingMessage by remember { mutableStateOf(false) }
+    var isLeavingGroup by remember { mutableStateOf(false) }
     var isRotatingKey by remember { mutableStateOf(false) }
     var isUnlockingPin by remember { mutableStateOf(false) }
     var hasUnlockedMasterKey by remember { mutableStateOf(SessionCryptoState.getMasterPrivateKey() != null) }
@@ -153,6 +161,18 @@ fun ChatDetailScreen(
         }
     }
 
+    fun loadConversation() {
+        coroutineScope.launch {
+            when (val result = repository.getConversation(conversationId)) {
+                is ChatResult.Success -> {
+                    conversation = result.value
+                    activeKeyVersion = result.value.currentKeyVersion
+                }
+                is ChatResult.Failure -> errorMessage = result.message
+            }
+        }
+    }
+
     fun loadMessages() {
         if (!ChatSendUiPolicy.shouldLoadHistory(hasUnlockedMasterKey)) {
             messages = emptyList()
@@ -165,10 +185,57 @@ fun ChatDetailScreen(
             isLoading = true
             errorMessage = null
             when (val result = repository.getMessages(conversationId)) {
-                is ChatResult.Success -> messages = result.value
+                is ChatResult.Success -> {
+                    messages = result.value
+                    deliveryStatuses = result.value
+                        .filter { it.isMine }
+                        .associate { it.id to MessageDeliveryStatus.SENT }
+                }
                 is ChatResult.Failure -> errorMessage = result.message
             }
             isLoading = false
+        }
+    }
+
+    fun replaceLocalMessage(pending: ChatMessageItem, sent: ChatMessageItem) {
+        messages = messages.map { message ->
+            if (
+                message.id == pending.id ||
+                (!message.clientMessageId.isNullOrBlank() && message.clientMessageId == sent.clientMessageId)
+            ) {
+                sent
+            } else {
+                message
+            }
+        }.distinctBy { it.id }
+        deliveryStatuses = deliveryStatuses - pending.id + (sent.id to MessageDeliveryStatus.SENT)
+    }
+
+    fun mergeIncomingMessage(item: ChatMessageItem) {
+        val pending = messages.firstOrNull { message ->
+            !item.clientMessageId.isNullOrBlank() && message.clientMessageId == item.clientMessageId
+        }
+        if (pending != null) {
+            replaceLocalMessage(pending, item)
+        } else {
+            messages = (messages + item).distinctBy { it.id }
+            if (item.isMine) {
+                deliveryStatuses = deliveryStatuses + (item.id to MessageDeliveryStatus.SENT)
+            }
+        }
+    }
+
+    fun leaveGroup() {
+        if (isLeavingGroup) return
+        coroutineScope.launch {
+            isLeavingGroup = true
+            errorMessage = null
+            statusMessage = null
+            when (val result = repository.leaveConversation(conversationId)) {
+                is ChatResult.Success -> onBack()
+                is ChatResult.Failure -> errorMessage = result.message
+            }
+            isLeavingGroup = false
         }
     }
 
@@ -263,6 +330,9 @@ fun ChatDetailScreen(
                 when (val realtimeRequest = repository.buildRealtimeMessageRequest(conversationId, activeKeyVersion, text, drafts)) {
                     is ChatResult.Success -> {
                         activeKeyVersion = realtimeRequest.value.keyVersion
+                        val pendingMessage = repository.localPendingMessage(realtimeRequest.value, text, drafts)
+                        messages = (messages + pendingMessage).distinctBy { it.id }
+                        deliveryStatuses = deliveryStatuses + (pendingMessage.id to MessageDeliveryStatus.SENDING)
                         val sentRealtime = if (ChatSendUiPolicy.shouldAttemptRealtime(realtimeClient?.isConnected == true)) {
                             realtimeClient?.sendMessage(realtimeRequest.value) == true
                         } else {
@@ -271,14 +341,18 @@ fun ChatDetailScreen(
                         if (sentRealtime) {
                             input = ""
                             attachmentDrafts = emptyList()
+                            deliveryStatuses = deliveryStatuses + (pendingMessage.id to MessageDeliveryStatus.SENT)
                         } else {
-                            when (val restResult = repository.sendMessage(conversationId, activeKeyVersion, text, drafts)) {
+                            when (val restResult = repository.sendPreparedMessage(conversationId, realtimeRequest.value, text, drafts)) {
                                 is ChatResult.Success -> {
                                     input = ""
                                     attachmentDrafts = emptyList()
-                                    messages = (messages + restResult.value).distinctBy { it.id }
+                                    replaceLocalMessage(pendingMessage, restResult.value)
                                 }
-                                is ChatResult.Failure -> errorMessage = restResult.message
+                                is ChatResult.Failure -> {
+                                    deliveryStatuses = deliveryStatuses + (pendingMessage.id to MessageDeliveryStatus.FAILED)
+                                    errorMessage = restResult.message
+                                }
                             }
                         }
                     }
@@ -320,6 +394,7 @@ fun ChatDetailScreen(
     }
 
     LaunchedEffect(conversationId) {
+        loadConversation()
         loadMessages()
     }
 
@@ -339,7 +414,7 @@ fun ChatDetailScreen(
                 if (message.conversationId != conversationId) return@onMessage
                 coroutineScope.launch {
                     val item = repository.decryptIncomingMessage(message)
-                    messages = (messages + item).distinctBy { it.id }
+                    mergeIncomingMessage(item)
                     errorMessage = null
                 }
             },
@@ -403,15 +478,27 @@ fun ChatDetailScreen(
         )
     }
 
+    if (showMembersDialog) {
+        GroupMembersDialog(
+            participants = conversation?.participants.orEmpty(),
+            onDismiss = { showMembersDialog = false }
+        )
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(ChatBackground)
     ) {
         ChatHeader(
-            activeKeyVersion = activeKeyVersion,
+            title = conversation?.title ?: "Cuộc trò chuyện",
+            subtitle = conversation?.subtitle(activeKeyVersion) ?: "Key version $activeKeyVersion",
+            isGroup = conversation?.type == "GROUP",
             isRotatingKey = isRotatingKey,
+            isLeavingGroup = isLeavingGroup,
             onBack = onBack,
+            onShowMembers = { showMembersDialog = true },
+            onLeaveGroup = { leaveGroup() },
             onRefresh = { loadMessages() },
             onRotateKey = { rotateKeyManually() }
         )
@@ -468,6 +555,7 @@ fun ChatDetailScreen(
                     items(messages, key = { it.id }) { message ->
                         MessageBubble(
                             message = message,
+                            deliveryStatus = deliveryStatuses[message.id],
                             onEdit = { startEdit(message) },
                             onDelete = { pendingDeleteMessage = message }
                         )
@@ -493,9 +581,14 @@ fun ChatDetailScreen(
 
 @Composable
 private fun ChatHeader(
-    activeKeyVersion: Int,
+    title: String,
+    subtitle: String,
+    isGroup: Boolean,
     isRotatingKey: Boolean,
+    isLeavingGroup: Boolean,
     onBack: () -> Unit,
+    onShowMembers: () -> Unit,
+    onLeaveGroup: () -> Unit,
     onRefresh: () -> Unit,
     onRotateKey: () -> Unit
 ) {
@@ -514,7 +607,7 @@ private fun ChatHeader(
                 .background(Color(0xFFE7F4F1))
         ) {
             Icon(
-                Icons.Default.ArrowBack,
+                Icons.AutoMirrored.Filled.ArrowBack,
                 contentDescription = "Quay lại",
                 tint = ChatAccent
             )
@@ -524,7 +617,7 @@ private fun ChatHeader(
 
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = "Chat",
+                text = title,
                 style = MaterialTheme.typography.titleLarge,
                 color = ChatPrimary,
                 fontWeight = FontWeight.Bold,
@@ -532,10 +625,53 @@ private fun ChatHeader(
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = "Key version $activeKeyVersion",
+                text = subtitle,
                 style = MaterialTheme.typography.bodySmall,
                 color = ChatMutedText
             )
+        }
+
+        if (isGroup) {
+            IconButton(
+                onClick = onShowMembers,
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFFF2F4F7))
+            ) {
+                Icon(
+                    Icons.Default.People,
+                    contentDescription = "Xem thành viên",
+                    tint = ChatPrimary
+                )
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            IconButton(
+                onClick = onLeaveGroup,
+                enabled = !isLeavingGroup,
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFFFFF1F3))
+            ) {
+                if (isLeavingGroup) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                        color = Color(0xFFB42318)
+                    )
+                } else {
+                    Icon(
+                        Icons.AutoMirrored.Filled.ExitToApp,
+                        contentDescription = "Rời nhóm",
+                        tint = Color(0xFFB42318)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
         }
 
         IconButton(
@@ -677,6 +813,56 @@ private fun PinRecoveryPanel(
             }
         }
     }
+}
+
+@Composable
+private fun GroupMembersDialog(
+    participants: List<UserResponse>,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Thành viên nhóm") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                participants.forEach { user ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .background(Color(0xFFE7F4F1), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = user.displayName.firstOrNull()?.uppercaseChar()?.toString() ?: "?",
+                                color = ChatAccent,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = user.displayName,
+                                color = ChatPrimary,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "@${user.username}",
+                                color = ChatMutedText,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Đóng")
+            }
+        }
+    )
 }
 
 @Composable
@@ -885,7 +1071,7 @@ private fun MessageInputBar(
                     .background(if (canSend) ChatAccent else Color(0xFFD0D5DD))
             ) {
                 Icon(
-                    Icons.Default.Send,
+                    Icons.AutoMirrored.Filled.Send,
                     contentDescription = if (isEditing) "Cập nhật" else "Gửi",
                     tint = Color.White
                 )
@@ -945,12 +1131,14 @@ private fun AttachmentDraftChip(
 @Composable
 private fun MessageBubble(
     message: ChatMessageItem,
+    deliveryStatus: MessageDeliveryStatus?,
     onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
     val messageTime = message.createdAt?.takeIf { it.isNotBlank() }?.asMessageTime()
     val editText = if (message.isEdited) "đã sửa" else null
-    val metaText = listOfNotNull("Key v${message.keyVersion}", messageTime, editText).joinToString(" • ")
+    val deliveryText = deliveryStatus?.label?.takeIf { message.isMine }
+    val metaText = listOfNotNull("Key v${message.keyVersion}", messageTime, editText, deliveryText).joinToString(" • ")
     var showMenu by remember { mutableStateOf(false) }
     val canEdit = ChatMessageActionPolicy.canEdit(message.isMine, message.canDecrypt)
     val canDelete = ChatMessageActionPolicy.canDelete(message.isMine)
@@ -1141,8 +1329,17 @@ private fun AttachmentFileCard(
     }
 }
 
+private fun ConversationItem.subtitle(activeKeyVersion: Int): String {
+    val conversationType = if (type == "GROUP") {
+        "${participants.size} thành viên"
+    } else {
+        "Trực tiếp"
+    }
+    return "$conversationType • Key version $activeKeyVersion"
+}
+
 private fun String.asMessageTime(): String {
-    return replace('T', ' ').take(16)
+    return ChatTimeFormatter.format(this) ?: replace('T', ' ').take(16)
 }
 
 private fun iconForMimeType(mimeType: String): ImageVector {

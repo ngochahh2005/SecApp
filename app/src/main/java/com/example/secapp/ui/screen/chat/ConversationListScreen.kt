@@ -22,22 +22,27 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.Logout
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -78,9 +83,13 @@ fun ConversationListScreen(
     var refreshKey by remember { mutableIntStateOf(0) }
     var isLoading by remember { mutableStateOf(true) }
     var conversations by remember { mutableStateOf<List<ConversationItem>>(emptyList()) }
+    var searchQuery by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var pendingDeleteConversation by remember { mutableStateOf<ConversationItem?>(null) }
     var deletingConversationId by remember { mutableStateOf<String?>(null) }
+    val visibleConversations = conversations.filter { conversation ->
+        ConversationSearchPolicy.matches(conversation, searchQuery)
+    }
 
     fun loadConversations() {
         coroutineScope.launch {
@@ -158,11 +167,29 @@ fun ConversationListScreen(
                 .padding(horizontal = 20.dp, vertical = 18.dp)
         ) {
             ConversationListHeader(
-                conversationCount = conversations.size,
+                conversationCount = visibleConversations.size,
                 onLogout = onLogout
             )
 
             Spacer(modifier = Modifier.height(18.dp))
+
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                leadingIcon = {
+                    Icon(
+                        Icons.Default.Search,
+                        contentDescription = null,
+                        tint = ChatMutedText
+                    )
+                },
+                placeholder = { Text("Tìm cuộc trò chuyện") },
+                shape = RoundedCornerShape(8.dp)
+            )
+
+            Spacer(modifier = Modifier.height(14.dp))
 
             errorMessage?.let {
                 ErrorBanner(message = it, onRetry = { refreshKey++ })
@@ -182,14 +209,18 @@ fun ConversationListScreen(
                     EmptyConversationState(onCreateConversation = onCreateConversation)
                 }
 
+                visibleConversations.isEmpty() -> {
+                    EmptySearchState(searchQuery = searchQuery)
+                }
+
                 else -> {
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                         contentPadding = PaddingValues(bottom = 88.dp)
                     ) {
-                        items(conversations, key = { it.id }) { conversation ->
-                            ConversationRow(
+                        items(visibleConversations, key = { it.id }) { conversation ->
+                            SwipeableConversationRow(
                                 conversation = conversation,
                                 onClick = { onOpenConversation(conversation) },
                                 onDelete = { pendingDeleteConversation = conversation }
@@ -228,7 +259,7 @@ private fun ConversationListHeader(
         }
         IconButton(onClick = onLogout) {
             Icon(
-                Icons.Default.Logout,
+                Icons.AutoMirrored.Filled.Logout,
                 contentDescription = "Đăng xuất",
                 tint = ChatPrimary
             )
@@ -324,10 +355,75 @@ private fun EmptyConversationState(onCreateConversation: () -> Unit) {
 }
 
 @Composable
-private fun ConversationRow(
+private fun EmptySearchState(searchQuery: String) {
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = "Không tìm thấy cuộc trò chuyện",
+            style = MaterialTheme.typography.titleMedium,
+            color = ChatPrimary,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "Không có kết quả cho \"$searchQuery\"",
+            style = MaterialTheme.typography.bodyMedium,
+            color = ChatMutedText
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SwipeableConversationRow(
     conversation: ConversationItem,
     onClick: () -> Unit,
     onDelete: () -> Unit
+) {
+    val dismissState = rememberSwipeToDismissBoxState()
+
+    SwipeToDismissBox(
+        state = dismissState,
+        enableDismissFromStartToEnd = false,
+        backgroundContent = {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(82.dp)
+                    .background(Color(0xFFFFE4E8), RoundedCornerShape(8.dp))
+                    .padding(end = 12.dp),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = onDelete,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .background(Color(0xFFB42318), CircleShape)
+                ) {
+                    Icon(
+                        Icons.Default.Delete,
+                        contentDescription = "Xóa cuộc trò chuyện",
+                        tint = Color.White
+                    )
+                }
+            }
+        }
+    ) {
+        ConversationRow(
+            conversation = conversation,
+            onClick = onClick
+        )
+    }
+}
+
+@Composable
+private fun ConversationRow(
+    conversation: ConversationItem,
+    onClick: () -> Unit
 ) {
     Card(
         modifier = Modifier
@@ -388,17 +484,9 @@ private fun ConversationRow(
                 )
             }
 
-            IconButton(onClick = onDelete) {
-                Icon(
-                    Icons.Default.Delete,
-                    contentDescription = "Xóa cuộc trò chuyện",
-                    tint = Color(0xFFB42318)
-                )
-            }
-
-            Spacer(modifier = Modifier.width(2.dp))
+            Spacer(modifier = Modifier.width(8.dp))
             Icon(
-                Icons.Default.KeyboardArrowRight,
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
                 contentDescription = null,
                 tint = Color(0xFF98A2B3)
             )
@@ -427,17 +515,5 @@ private fun conversationInitial(title: String): String {
 }
 
 private fun String?.asConversationTime(): String {
-    return this
-        ?.replace('T', ' ')
-        ?.take(16)
-        ?.takeIf { it.isNotBlank() }
-        ?: "Chưa có tin nhắn"
-}
-
-private fun String.toConversationTypeLabel(): String {
-    return when (uppercase()) {
-        "DIRECT" -> "Trực tiếp"
-        "GROUP" -> "Nhóm"
-        else -> this
-    }
+    return ChatTimeFormatter.formatConversationTime(this)
 }

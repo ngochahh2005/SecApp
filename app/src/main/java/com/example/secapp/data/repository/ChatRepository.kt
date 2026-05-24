@@ -46,6 +46,7 @@ data class ConversationItem(
 
 data class ChatMessageItem(
     val id: String,
+    val clientMessageId: String? = null,
     val senderId: String,
     val content: String,
     val isMine: Boolean,
@@ -95,15 +96,26 @@ class ChatRepository(context: Context) {
         )
     }
 
-    suspend fun deleteConversation(conversationId: String): ChatResult<Unit> = withContext(Dispatchers.IO) {
+    suspend fun getConversation(conversationId: String): ChatResult<ConversationItem> = withContext(Dispatchers.IO) {
+        return@withContext runCatching {
+            conversationService.getConversation(authHeader(), conversationId).toItem()
+        }.fold(
+            onSuccess = { ChatResult.Success(it) },
+            onFailure = { ChatResult.Failure(readableApiError(it, "Không tải được thông tin cuộc trò chuyện")) }
+        )
+    }
+
+    suspend fun leaveConversation(conversationId: String): ChatResult<Unit> = withContext(Dispatchers.IO) {
         return@withContext runCatching {
             conversationService.deleteConversation(authHeader(), conversationId)
             Unit
         }.fold(
             onSuccess = { ChatResult.Success(Unit) },
-            onFailure = { ChatResult.Failure(readableApiError(it, "Không xóa được cuộc trò chuyện")) }
+            onFailure = { ChatResult.Failure(readableApiError(it, "Không rời được cuộc trò chuyện")) }
         )
     }
+
+    suspend fun deleteConversation(conversationId: String): ChatResult<Unit> = leaveConversation(conversationId)
 
     suspend fun searchUsers(keyword: String): ChatResult<List<UserResponse>> = withContext(Dispatchers.IO) {
         if (keyword.isBlank()) return@withContext ChatResult.Success(emptyList())
@@ -215,6 +227,7 @@ class ChatRepository(context: Context) {
             val response = messageService.sendMessage(authHeader(), conversationId, request)
             ChatMessageItem(
                 id = response.messageId,
+                clientMessageId = request.clientMessageId,
                 senderId = response.senderId,
                 content = content.trim(),
                 isMine = true,
@@ -227,6 +240,55 @@ class ChatRepository(context: Context) {
         }.fold(
             onSuccess = { ChatResult.Success(it) },
             onFailure = { ChatResult.Failure(readableApiError(it, "Không gửi được tin nhắn")) }
+        )
+    }
+
+    suspend fun sendPreparedMessage(
+        conversationId: String,
+        request: SendMessageRequest,
+        content: String,
+        attachments: List<ChatAttachmentDraft>
+    ): ChatResult<ChatMessageItem> = withContext(Dispatchers.IO) {
+        return@withContext runCatching {
+            val response = messageService.sendMessage(authHeader(), conversationId, request)
+            ChatMessageItem(
+                id = response.messageId,
+                clientMessageId = request.clientMessageId,
+                senderId = response.senderId,
+                content = content.trim(),
+                isMine = true,
+                createdAt = request.clientCreatedAt,
+                keyVersion = request.keyVersion,
+                canDecrypt = true,
+                messageType = request.messageType,
+                attachments = attachments.map { it.toItem() }
+            )
+        }.fold(
+            onSuccess = { ChatResult.Success(it) },
+            onFailure = { ChatResult.Failure(readableApiError(it, "Không gửi được tin nhắn")) }
+        )
+    }
+
+    suspend fun sendPreparedMessage(
+        conversationId: String,
+        request: RealtimeMessageRequest,
+        content: String,
+        attachments: List<ChatAttachmentDraft>
+    ): ChatResult<ChatMessageItem> {
+        return sendPreparedMessage(
+            conversationId = conversationId,
+            request = SendMessageRequest(
+                clientMessageId = request.clientMessageId,
+                cipherData = request.cipherData,
+                iv = request.iv,
+                aad = request.aad,
+                keyVersion = request.keyVersion,
+                messageType = request.messageType,
+                clientCreatedAt = request.clientCreatedAt,
+                attachments = request.attachments
+            ),
+            content = content,
+            attachments = attachments
         )
     }
 
@@ -303,6 +365,25 @@ class ChatRepository(context: Context) {
         }.fold(
             onSuccess = { ChatResult.Success(it) },
             onFailure = { ChatResult.Failure(readableApiError(it, "Không mã hóa được tin nhắn realtime")) }
+        )
+    }
+
+    fun localPendingMessage(
+        request: RealtimeMessageRequest,
+        content: String,
+        attachments: List<ChatAttachmentDraft>
+    ): ChatMessageItem {
+        return ChatMessageItem(
+            id = request.clientMessageId,
+            clientMessageId = request.clientMessageId,
+            senderId = request.senderId,
+            content = content.trim(),
+            isMine = true,
+            createdAt = request.clientCreatedAt,
+            keyVersion = request.keyVersion,
+            canDecrypt = true,
+            messageType = request.messageType,
+            attachments = attachments.map { it.toItem() }
         )
     }
 
@@ -490,6 +571,7 @@ class ChatRepository(context: Context) {
             val payload = ChatCrypto.decryptMessagePayload(cipherData, iv, aad, conversationKey)
             ChatMessageItem(
                 id = id,
+                clientMessageId = clientMessageId,
                 senderId = senderId,
                 content = payload.content,
                 isMine = senderId == currentUserId,
@@ -503,6 +585,7 @@ class ChatRepository(context: Context) {
         }.getOrElse {
             ChatMessageItem(
                 id = id,
+                clientMessageId = clientMessageId,
                 senderId = senderId,
                 content = "Không thể giải mã tin nhắn này",
                 isMine = senderId == currentUserId,
@@ -517,6 +600,7 @@ class ChatRepository(context: Context) {
     private fun MessageResponse.toLockedItem(currentUserId: String): ChatMessageItem {
         return ChatMessageItem(
             id = id,
+            clientMessageId = clientMessageId,
             senderId = senderId,
             content = "Không thể giải mã tin nhắn này",
             isMine = senderId == currentUserId,
