@@ -17,7 +17,8 @@ internal object ChatKeyRotationPolicy {
 
 internal object ChatKeyAccessPolicy {
     fun shouldProbeExistingKeyBeforeSending(hasUnlockedMasterKey: Boolean): Boolean {
-        return hasUnlockedMasterKey
+        // The backend returns SESSION keys before MASTER keys, so locked PIN state must still probe.
+        return true
     }
 }
 

@@ -16,7 +16,7 @@ object NetworkConfig {
         level = HttpLoggingInterceptor.Level.BODY
     }
 
-    private val client = OkHttpClient.Builder()
+    private val client = NetworkTimeoutPolicy.applyTo(OkHttpClient.Builder())
         .addInterceptor(loggingInterceptor)
         .build()
 
@@ -46,7 +46,7 @@ object NetworkConfig {
 
     private fun authenticatedRetrofit(context: Context): Retrofit {
         val secureStorage = SecureStorage(context.applicationContext)
-        val authenticatedClient = OkHttpClient.Builder()
+        val authenticatedClient = NetworkTimeoutPolicy.applyTo(OkHttpClient.Builder())
             .addInterceptor { chain ->
                 val token = AuthSessionState.getAccessToken() ?: secureStorage.getAccessToken()
                 val requestBuilder = chain.request().newBuilder()

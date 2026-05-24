@@ -7,8 +7,8 @@ import org.junit.Test
 
 class ChatSendUiPolicyTest {
     @Test
-    fun historyIsLoadedOnlyAfterMasterKeyUnlock() {
-        assertFalse(ChatSendUiPolicy.shouldLoadHistory(hasUnlockedMasterKey = false))
+    fun historyLoadsBeforeMasterKeyUnlockSoSessionKeysCanDecryptCurrentMessages() {
+        assertTrue(ChatSendUiPolicy.shouldLoadHistory(hasUnlockedMasterKey = false))
         assertTrue(ChatSendUiPolicy.shouldLoadHistory(hasUnlockedMasterKey = true))
     }
 
