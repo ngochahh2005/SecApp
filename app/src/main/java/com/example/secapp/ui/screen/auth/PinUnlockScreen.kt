@@ -52,11 +52,28 @@ fun PinUnlockScreen(
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
+    fun continueWithoutMasterKey() {
+        Toast.makeText(
+            context,
+            "Tiếp tục với session hiện tại. Lịch sử cũ cần PIN để khôi phục.",
+            Toast.LENGTH_LONG
+        ).show()
+        openDashboard()
+    }
+
     fun submit() {
         if (isLoading) return
-        if (pin.length != 6) {
-            errorMessage = "Vui lòng nhập đủ 6 số PIN"
-            return
+
+        when (val action = PinUnlockPolicy.resolveSubmitAction(pin)) {
+            PinUnlockAction.ContinueWithoutMasterKey -> {
+                continueWithoutMasterKey()
+                return
+            }
+            PinUnlockAction.AttemptUnlock -> Unit
+            is PinUnlockAction.Reject -> {
+                errorMessage = action.message
+                return
+            }
         }
 
         coroutineScope.launch {
@@ -68,7 +85,7 @@ fun PinUnlockScreen(
                     openDashboard()
                 }
                 is AuthResult.Failure -> {
-                    errorMessage = result.message
+                    errorMessage = "${result.message}. Bạn vẫn có thể tiếp tục với session hiện tại."
                 }
             }
             isLoading = false
@@ -99,7 +116,7 @@ fun PinUnlockScreen(
             )
             Spacer(modifier = Modifier.height(24.dp))
             Text(
-                text = "Nhập mã PIN của bạn để khôi phục khóa cá nhân và mở lịch sử chat.",
+                text = "Nhập mã PIN để khôi phục khóa cá nhân, hoặc bỏ qua để dùng session hiện tại.",
                 color = Color(0xFF777A82),
                 fontFamily = ibm_plex_sans,
                 fontSize = 18.sp,
@@ -146,6 +163,26 @@ fun PinUnlockScreen(
             }
 
             CommonSpace(20.dp)
+
+            Button(
+                onClick = { continueWithoutMasterKey() },
+                enabled = !isLoading,
+                elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color.White,
+                    contentColor = Color(0xff283FB1)
+                ),
+                shape = RoundedCornerShape(4.dp),
+                modifier = Modifier.fillMaxWidth().height(48.dp)
+            ) {
+                Text(
+                    text = "Tiếp tục không nhập PIN",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            CommonSpace(12.dp)
 
             Button(
                 onClick = onLogout,

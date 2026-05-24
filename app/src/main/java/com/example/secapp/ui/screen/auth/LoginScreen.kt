@@ -82,7 +82,7 @@ fun LoginScreen(
             errorMessage = null
             when (val result = authRepository.login(viewModel.username.trim(), viewModel.password, Build.MODEL)) {
                 is AuthResult.Success -> {
-                    Toast.makeText(context, "Đăng nhập thành công. Nhập PIN để mở khóa.", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Đăng nhập thành công. PIN là tùy chọn để mở lịch sử cũ.", Toast.LENGTH_SHORT).show()
                     openPinUnlockScreen()
                 }
                 is AuthResult.Failure -> {

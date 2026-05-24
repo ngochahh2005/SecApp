@@ -12,6 +12,7 @@ import com.example.secapp.data.model.dto.EncryptedConversationKeyRequest
 import com.example.secapp.data.model.dto.MessageResponse
 import com.example.secapp.data.model.dto.RealtimeMessageRequest
 import com.example.secapp.data.model.dto.SendMessageRequest
+import com.example.secapp.data.model.dto.StoreConversationKeysRequest
 import com.example.secapp.data.model.dto.UserResponse
 import com.example.secapp.data.remote.NetworkConfig
 import com.google.gson.Gson
@@ -47,6 +48,11 @@ data class ChatMessageItem(
     val isMine: Boolean,
     val createdAt: String?,
     val canDecrypt: Boolean
+)
+
+private data class ConversationKeyMaterial(
+    val keyVersion: Int,
+    val key: SecretKeySpec
 )
 
 class ChatRepository(context: Context) {
@@ -103,13 +109,14 @@ class ChatRepository(context: Context) {
         )
     }
 
-    suspend fun getMessages(conversationId: String, keyVersion: Int): ChatResult<List<ChatMessageItem>> = withContext(Dispatchers.IO) {
+    suspend fun getMessages(conversationId: String): ChatResult<List<ChatMessageItem>> = withContext(Dispatchers.IO) {
         return@withContext runCatching {
             val currentUserId = currentUserId()
-            val conversationKey = getConversationKey(conversationId, keyVersion)
             messageService.getMessages(authHeader(), conversationId).map { message ->
-                message.toItem(currentUserId, conversationKey)
-            }
+                val conversationKey = getConversationKeyForRead(message.conversationId, message.keyVersion)
+                    ?: return@map null
+                message.toItem(currentUserId, conversationKey).takeIf { it.canDecrypt }
+            }.filterNotNull()
         }.fold(
             onSuccess = { ChatResult.Success(it) },
             onFailure = { ChatResult.Failure(readableApiError(it, "Không tải được tin nhắn")) }
@@ -155,7 +162,8 @@ class ChatRepository(context: Context) {
     }
 
     suspend fun decryptIncomingMessage(message: MessageResponse): ChatMessageItem = withContext(Dispatchers.IO) {
-        val conversationKey = getConversationKey(message.conversationId, message.keyVersion)
+        val conversationKey = getConversationKeyForRead(message.conversationId, message.keyVersion)
+            ?: return@withContext message.toLockedItem(currentUserId())
         message.toItem(currentUserId(), conversationKey)
     }
 
@@ -220,17 +228,60 @@ class ChatRepository(context: Context) {
         return conversationKey
     }
 
+    private suspend fun getConversationKeyForRead(conversationId: String, keyVersion: Int): SecretKeySpec? {
+        ConversationKeyCache.get(conversationId, keyVersion)?.let { return it }
+        return runCatching { getConversationKey(conversationId, keyVersion) }.getOrNull()
+    }
+
+    private suspend fun getConversationKeyForSending(conversationId: String, requestedKeyVersion: Int): ConversationKeyMaterial {
+        ConversationKeyCache.latest(conversationId, minimumVersion = requestedKeyVersion)?.let { cached ->
+            return ConversationKeyMaterial(cached.keyVersion, cached.key)
+        }
+
+        return runCatching {
+            ConversationKeyMaterial(requestedKeyVersion, getConversationKey(conversationId, requestedKeyVersion))
+        }.getOrElse {
+            provisionNewConversationKey(conversationId, requestedKeyVersion)
+        }
+    }
+
+    private suspend fun provisionNewConversationKey(conversationId: String, requestedKeyVersion: Int): ConversationKeyMaterial {
+        val conversation = conversationService.getConversation(authHeader(), conversationId)
+        val conversationKey = ChatCrypto.generateConversationKey()
+        val latestCachedVersion = ConversationKeyCache.latestVersion(conversationId) ?: 0
+        val newKeyVersion = maxOf(requestedKeyVersion, conversation.currentKeyVersion, latestCachedVersion) + 1
+        val encryptedKeys = buildEncryptedKeys(
+            users = conversation.participants,
+            conversationKey = conversationKey,
+            keyVersion = newKeyVersion
+        )
+        val response = conversationService.storeConversationKeys(
+            authHeader(),
+            conversationId,
+            StoreConversationKeysRequest(
+                newKeyVersion = newKeyVersion,
+                reason = "SESSION_WITHOUT_MASTER_KEY",
+                encryptedKeys = encryptedKeys
+            )
+        )
+        if (!response.isSuccessful) {
+            throw HttpException(response)
+        }
+        ConversationKeyCache.put(conversationId, newKeyVersion, conversationKey)
+        return ConversationKeyMaterial(newKeyVersion, conversationKey)
+    }
+
     private suspend fun buildSendMessageRequest(
         conversationId: String,
         keyVersion: Int,
         content: String
     ): SendMessageRequest {
-        val conversationKey = getConversationKey(conversationId, keyVersion)
+        val conversationKey = getConversationKeyForSending(conversationId, keyVersion)
         val createdAt = utcNow()
         val encrypted = ChatCrypto.encryptMessage(
             content = content.trim(),
             clientCreatedAt = createdAt,
-            conversationKey = conversationKey,
+            conversationKey = conversationKey.key,
             aadValue = conversationId
         )
         return SendMessageRequest(
@@ -238,7 +289,7 @@ class ChatRepository(context: Context) {
             cipherData = encrypted.cipherData,
             iv = encrypted.iv,
             aad = encrypted.aad,
-            keyVersion = keyVersion,
+            keyVersion = conversationKey.keyVersion,
             messageType = "TEXT",
             clientCreatedAt = createdAt
         )
@@ -265,6 +316,17 @@ class ChatRepository(context: Context) {
                 canDecrypt = false
             )
         }
+    }
+
+    private fun MessageResponse.toLockedItem(currentUserId: String): ChatMessageItem {
+        return ChatMessageItem(
+            id = id,
+            senderId = senderId,
+            content = "Không thể giải mã tin nhắn này",
+            isMine = senderId == currentUserId,
+            createdAt = clientCreatedAt ?: serverCreatedAt,
+            canDecrypt = false
+        )
     }
 
     private fun ConversationResponse.toItem(): ConversationItem {
